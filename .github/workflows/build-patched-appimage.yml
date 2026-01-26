@@ -40,13 +40,13 @@ jobs:
       - name: Retag continuous
         if: github.repository == 'armelvil/UltraGrid' && github.ref == 'refs/heads/master'
         run: |
-          git fetch --prune --unshallow --tags
+          git fetch --prune --tags
           git tag -f $TAG
           git push -f origin refs/tags/$TAG:refs/tags/$TAG
       - name: Create continuous release
         if: github.repository == 'armelvil/UltraGrid' && github.ref == 'refs/heads/master'
         run: |
-          git fetch --prune --unshallow --tags
+          git fetch --prune --tags
           git tag -f $TAG
           git push -f origin refs/tags/$TAG:refs/tags/$TAG
           # Create release if it doesn't exist
