@@ -124,7 +124,7 @@ jobs:
 #          .github/scripts/replace-asset.sh continuous UltraGrid-$CHANNEL-x86_64.AppImage.zsync application/x-zsync AppImage%20${CHANNEL}%20zsync
 #          .github/scripts/replace-asset.sh $TAG UltraGrid-$VERSION-x86_64.AppImage application/x-appimage Linux%20build
       - name: Upload Build
-        if: steps.upload-release.conclusion == 'skipped'
+#        if: steps.upload-release.conclusion == 'skipped'
         uses: actions/upload-artifact@main
         with:
           name: UltraGrid-Linux
