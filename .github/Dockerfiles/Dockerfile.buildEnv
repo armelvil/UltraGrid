@@ -1,0 +1,43 @@
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base dependencies
+RUN apt-get update && apt-get install -y \
+    autoconf automake libtool pkg-config \
+    build-essential gcc g++ make \
+    curl wget git \
+    desktop-file-utils libfile-mimeinfo-perl \
+    jq zsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install FFmpeg, SDL, GLFW dependencies (based on install scripts)
+RUN apt-get update && apt-get install -y \
+    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+    libavfilter-dev libavdevice-dev \
+    libsdl2-dev libsdl2-2.0-0 \
+    libglfw3-dev libglfw3 \
+    libgl1-mesa-dev libgl1-mesa-dev \
+    libvulkan-dev libx11-xcb-dev libxkbcommon-dev
+
+RUN rm -rf /var/lib/apt/lists/*
+
+# Create directories for caching SDKs
+RUN mkdir -p /var/tmp/ffmpeg /var/tmp/sdl /var/tmp/glfw
+
+# Set working directory
+WORKDIR /home/runner
+
+# Default user (matches GitHub Actions runner user)
+RUN useradd -m runner && chown -R runner:runner /home/runner /var/tmp
+USER runner
+
+# Copy environment setup script (if not already present in repo)
+COPY .github/scripts/environment.sh /home/runner/environment.sh
+
+# Set environment variables (matching .github/scripts/environment.sh)
+ENV TAG=continuous \
+    CHANNEL=continuous \
+    VERSION=2.3.0 \
+    FEATURES="--enable-ndi --enable-ffmpeg --enable-sdl --enable-glfw"
