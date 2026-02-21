@@ -33,9 +33,6 @@ WORKDIR /home/runner
 RUN useradd -m runner && chown -R runner:runner /home/runner /var/tmp
 USER runner
 
-# Copy environment setup script (if not already present in repo)
-COPY .github/scripts/environment.sh /home/runner/environment.sh
-
 # Set environment variables (matching .github/scripts/environment.sh)
 ENV TAG=continuous \
     CHANNEL=continuous \

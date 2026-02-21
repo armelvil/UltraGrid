@@ -51,7 +51,7 @@ jobs:
     name: run Ubuntu
     needs: prepare
     runs-on: ubuntu-22.04
-    container: ghcr.io/armelvil/ultragrid-build:ubuntu22.04-v1
+    container: ghcr.io/armelvil/ultragrid_base:latest
     env:
       appimage_key: ${{ secrets.appimage_key }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
