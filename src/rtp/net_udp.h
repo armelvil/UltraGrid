@@ -46,6 +46,8 @@
 #include "config_win32.h"
 #endif // HAVE_CONFIG_H
 
+#include "compat/net.h" //for fd_t
+
 #ifndef __cplusplus
 #include <stdbool.h>
 #endif
@@ -54,6 +56,7 @@ typedef struct _socket_udp socket_udp;
 struct socket_udp_local;
 
 #if defined(__cplusplus)
+#include <memory>
 extern "C" {
 #endif
 
@@ -130,6 +133,8 @@ bool udp_is_server_mode_blackhole(socket_udp *s);
 /*************************************************************************************************/
 #if defined(__cplusplus)
 }
+struct socket_udp_deleter{ void operator()(socket_udp *s){ udp_exit(s); } };
+using socket_udp_uniq = std::unique_ptr<socket_udp, socket_udp_deleter>;
 #endif
 
 #endif

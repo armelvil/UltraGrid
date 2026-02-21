@@ -90,9 +90,7 @@
 
 #include <amstream.h>
 
-typedef int		ttl_t;
 typedef unsigned char	byte;
-typedef SOCKET          fd_t;
 
 
 /*
@@ -184,9 +182,6 @@ void ShowMessage(int level, char *msg);
 #endif
 
 #define M_PI		3.14159265358979323846
-
-#define aligned_malloc _aligned_malloc
-#define aligned_free _aligned_free
 
 #ifdef HAVE_STDINT_H
 #include <stdint.h>

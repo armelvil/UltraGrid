@@ -1,0 +1,158 @@
+/**
+ * @file   utils/ptp.hpp
+ * @author Martin Piatka     <piatka@cesnet.cz>
+ */
+/*
+ * Copyright (c) 2025-2026 CESNET z.s.p.o.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, is permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of CESNET nor the names of its contributors may be
+ *    used to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESSED OR IMPLIED WARRANTIES, INCLUDING,
+ * BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+ * EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#ifndef PTP_HPP_df6ffbd91502
+#define PTP_HPP_df6ffbd91502
+
+#include <atomic>
+#include <array>
+#include <thread>
+#include <string>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
+#include "utils/spa_dll.h"
+#include "utils/ring_buffer.h"
+
+namespace detail{
+        struct Sync_pkt_data{
+                uint16_t seq;
+                uint64_t imprecise_ptp_ts;
+                uint64_t local_ts;
+        };
+
+        template<typename T, unsigned n>
+        class Average{
+                static_assert(n && (n & (n - 1)) == 0, "n must be a power of two");
+        public:
+                void push(T val){
+                        unsigned idx = count & (n - 1);
+                        samples[idx] = val;
+                        count++;
+                }
+
+                double get() const {
+                        double acc = 0;
+                        unsigned c = size();
+                        for(unsigned i = 0; i < c; i++){
+                                acc += samples[i];
+                        }
+
+                        return acc / c;
+                }
+
+                unsigned size() const { return count < n ? count : n; }
+        private:
+                std::array<T, n> samples = {};
+                unsigned count = 0;
+        };
+}
+
+/**
+ * A pure software implementation of PTP time synchronization. Not as accurate as a proper HW based implementation, but
+ * on a properly configured system accuracy of ~100us can be achieved. Only a very basic subset of PTP is implemented,
+ * currently there is no network propagation delay compensation.
+ *
+ * The clock is monotonic, synchronization is done by applying a correction coefficient to the local
+ * std::chrono::steady_clock to make it faster/slower as needed.
+ *
+ * The get_time() function can be safely called from any thread, is lockless and avoids syscalls if possible
+ * (steady_clock on Linux is implemented via VDSO).
+ *
+ * After starting the clock, it is necessary to wait until it achieves synchronization either by periodically checking
+ * the return value of is_locked() or using the wait_for_lock() blocking function.
+ *
+ */
+class Ptp_clock{
+public:
+        void start(std::string_view interface_name);
+        void stop();
+
+        uint64_t get_time();
+
+        const char* get_clock_id_str();
+        void wait_for_lock();
+        [[nodiscard]] bool is_locked() const;
+
+private:
+        std::string network_interface;
+
+        std::atomic<bool> should_run = true;
+        std::thread worker_event;
+        std::thread worker_general;
+
+        ring_buffer_uniq event_pkt_ring;
+
+        uint64_t ptp_ts = 0;
+        uint64_t local_ts = 0;
+        uint64_t synth_ptp_ts = 0;
+        double spa_corr = 1.0;
+        detail::Average<int64_t, 64> avg;
+        spa_dll dll = {};
+        std::vector<detail::Sync_pkt_data> sync_pkts;
+
+        mutable std::mutex mut;
+        std::condition_variable cv;
+        uint64_t clock_identity = 0;
+        bool locked = false;
+
+        /**
+         * The clock state is passed lockessly through these atomic variables. To ensure that we can update the whole
+         * state atomically they need to be accessed only with memory_order_seq_cst and update_count needs to be
+         * **before and after** modifying them. When reading check that the state is valid by comparing the value of
+         * update_count before and after reading.
+         */
+        std::atomic<uint32_t> update_count = 0;
+        std::atomic<uint64_t> local_snapshot = 0; ///< The timestamp of local std::steady_clock at time of snapshot
+        std::atomic<uint64_t> ptp_snapshot = 0; ///< The computed timestamp of the remote PTP clock at time of snapshot
+        std::atomic<double> corr_snapshot = 1.0; ///< Estimated ratio of PTP/local clock speeds
+
+
+        void ptp_worker_general();
+        void ptp_worker_event();
+        void processPtpPkt(uint8_t *buf, size_t len, uint64_t pkt_ts);
+
+        void update_clock(uint64_t new_local_ts, uint64_t new_ptp_ts);
+
+        void drop_sync_pkts_older_than(uint16_t seq);
+
+        void set_clock_identity(uint64_t);
+
+};
+
+
+#endif

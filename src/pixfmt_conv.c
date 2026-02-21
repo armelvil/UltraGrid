@@ -12,7 +12,7 @@
  *
  * To measure performance of conversions, use `tools/convert benchmark`.
  */
-/* Copyright (c) 2005-2025 CESNET
+/* Copyright (c) 2005-2026 CESNET, zájmové sdružení právnických osob
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, is permitted provided that the following conditions
@@ -49,6 +49,7 @@
  *
  */
 
+#include "types.h"
 #define __STDC_WANT_LIB_EXT1__ 1
 
 #include "pixfmt_conv.h"
@@ -59,6 +60,7 @@
 #include <string.h>          // for memcpy
 
 #include "color_space.h"
+#include "compat/endian.h"   // BYTE_ORDER, BIG_ENDIAN
 #include "compat/qsort_s.h"
 #include "debug.h"
 #include "utils/macros.h" // to_fourcc, OPTIMEZED_FOR, CLAMP
@@ -71,13 +73,19 @@
 #include "tmmintrin.h"
 #endif
 
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define MOD_NAME "[pixfmt_conv] "
+
+#if BYTE_ORDER == BIG_ENDIAN
 #define BYTE_SWAP(x) (3 - x)
 #else
 #define BYTE_SWAP(x) x
 #endif
 
-#define MOD_NAME "[pixfmt_conv] "
+#if defined __GNUC__ && (__GNUC__ >= 10 || __clang_major__ >= 9)
+#define ALWAYS_INLINE [[gnu::always_inline]]
+#else
+#define ALWAYS_INLINE
+#endif
 
 /**
  * @brief Converts v210 to UYVY
@@ -431,6 +439,11 @@ vc_copylineR12LtoRGB(unsigned char * __restrict dst, const unsigned char * __res
  * @param[in]  rshift  destination red shift
  * @param[in]  gshift  destination green shift
  * @param[in]  bshift  destination blue shift
+ *
+ * irregular widht (width % 8 != 0) can be tested with:
+ * @code{,sh}
+ * uv -t testcard:c=R12L:size=127x512 --param decoder-use-codec=RGBA -d gl
+ * @endcode
  */
 static void
 vc_copylineR12L(unsigned char *dst, const unsigned char *src, int dstlen, int rshift,
@@ -440,7 +453,13 @@ vc_copylineR12L(unsigned char *dst, const unsigned char *src, int dstlen, int rs
         uint32_t *d = (uint32_t *)(void *) dst;
         uint32_t alpha_mask = 0xFFFFFFFFU ^ (0xFFU << rshift) ^ (0xFFU << gshift) ^ (0xFFU << bshift);
 
-        OPTIMIZED_FOR (int x = 0; x <= dstlen - 32; x += 32) {
+        OPTIMIZED_FOR (int x = 0; x < dstlen; x += 32) {
+                unsigned char tmpbuf[32];
+                uint32_t *orig_d = 0;
+                if (x + 32 >= dstlen) {
+                        orig_d = d;
+                        d = (uint32_t *) tmpbuf;
+                }
                 uint8_t tmp;
                 uint8_t r, g, b;
                 tmp = src[BYTE_SWAP(0)] >> 4;
@@ -508,6 +527,9 @@ vc_copylineR12L(unsigned char *dst, const unsigned char *src, int dstlen, int rs
                 b = src[BYTE_SWAP(3)]; // b7
                 src += 4;
                 *d++ = alpha_mask | (r << rshift) | (g << gshift) | (b << bshift);
+                if (x + 32 >= dstlen) {
+                        memcpy(orig_d, tmpbuf, dstlen - x);
+                }
         }
 }
 
@@ -3471,6 +3493,228 @@ uyvy_to_i420(unsigned char *__restrict *__restrict out_data,
                         *v++  = (*in1++ + *in2++ + 1) / 2;
                 }
         }
+}
+
+/// @note out_depth needs to be at least 12
+ALWAYS_INLINE static inline void
+r12l_to_gbrpXXle(unsigned char *__restrict *__restrict out_data,
+                 const int *__restrict out_linesize,
+                 const unsigned char *__restrict in_data, int width, int height,
+                 unsigned int out_depth, int rind, int gind, int bind)
+{
+        assert(out_depth >= 12);
+        assert((uintptr_t) out_linesize[0] % 2 == 0);
+        assert((uintptr_t) out_linesize[1] % 2 == 0);
+        assert((uintptr_t) out_linesize[2] % 2 == 0);
+
+#define S(x) ((x) << (out_depth - 12U))
+
+        int src_linesize = vc_get_linesize(width, R12L);
+        for (int y = 0; y < height; ++y) {
+                const unsigned char *src = in_data + y * src_linesize;
+                uint16_t *dst_r = (uint16_t *)(void *) (out_data[rind] + out_linesize[rind] * y);
+                uint16_t *dst_g = (uint16_t *)(void *) (out_data[gind] + out_linesize[gind] * y);
+                uint16_t *dst_b = (uint16_t *)(void *) (out_data[bind] + out_linesize[bind] * y);
+
+                OPTIMIZED_FOR (int x = 0; x < width; x += 8) {
+                        uint16_t tmp = src[BYTE_SWAP(0)];
+                        tmp |= (src[BYTE_SWAP(1)] & 0xFU) << 8U;
+                        *dst_r++ = S(tmp); // r0
+                        *dst_g++ = S(src[BYTE_SWAP(2)] << 4U | src[BYTE_SWAP(1)] >> 4U); // g0
+                        tmp = src[BYTE_SWAP(3)];
+                        src += 4;
+                        tmp |= (src[BYTE_SWAP(0)] & 0xFU) << 8U;
+                        *dst_b++ = S(tmp); // b0
+                        *dst_r++ = S(src[BYTE_SWAP(1)] << 4U | src[BYTE_SWAP(0)] >> 4U); // r1
+                        tmp = src[BYTE_SWAP(2)];
+                        tmp |= (src[BYTE_SWAP(3)] & 0xFU) << 8U;
+                        *dst_g++ = S(tmp); // g1
+                        tmp = src[BYTE_SWAP(3)] >> 4U;
+                        src += 4;
+                        *dst_b++ = S(src[BYTE_SWAP(0)] << 4U | tmp); // b1
+                        tmp = src[BYTE_SWAP(1)];
+                        tmp |= (src[BYTE_SWAP(2)] & 0xFU) << 8U;
+                        *dst_r++ = S(tmp); // r2
+                        *dst_g++ = S(src[BYTE_SWAP(3)] << 4U | src[BYTE_SWAP(2)] >> 4U); // g2
+                        src += 4;
+                        tmp = src[BYTE_SWAP(0)];
+                        tmp |= (src[BYTE_SWAP(1)] & 0xFU) << 8U;
+                        *dst_b++ = S(tmp); // b2
+                        *dst_r++ = S(src[BYTE_SWAP(2)] << 4U | src[BYTE_SWAP(1)] >> 4U); // r3
+                        tmp = src[BYTE_SWAP(3)];
+                        src += 4;
+                        tmp |= (src[BYTE_SWAP(0)] & 0xFU) << 8U;
+                        *dst_g++ = S(tmp); // g3
+                        *dst_b++ = S(src[BYTE_SWAP(1)] << 4U | src[BYTE_SWAP(0)] >> 4U); // b3
+                        tmp = src[BYTE_SWAP(2)];
+                        tmp |= (src[BYTE_SWAP(3)] & 0xFU) << 8U;
+                        *dst_r++ = S(tmp); // r4
+                        tmp = src[BYTE_SWAP(3)] >> 4U;
+                        src += 4;
+                        *dst_g++ = S(src[BYTE_SWAP(0)] << 4U | tmp); // g4
+                        tmp = src[BYTE_SWAP(1)];
+                        tmp |= (src[BYTE_SWAP(2)] & 0xFU) << 8U;
+                        *dst_b++ = S(tmp); // b4
+                        *dst_r++ = S(src[BYTE_SWAP(3)] << 4U | src[BYTE_SWAP(2)] >> 4U); // r5
+                        src += 4;
+                        tmp = src[BYTE_SWAP(0)];
+                        tmp |= (src[BYTE_SWAP(1)] & 0xFU) << 8U;
+                        *dst_g++ = S(tmp); // g5
+                        *dst_b++ = S(src[BYTE_SWAP(2)] << 4U | src[BYTE_SWAP(1)] >> 4U); // b5
+                        tmp = src[BYTE_SWAP(3)];
+                        src += 4;
+                        tmp |= (src[BYTE_SWAP(0)] & 0xFU) << 8U;
+                        *dst_r++ = S(tmp); // r6
+                        *dst_g++ = S(src[BYTE_SWAP(1)] << 4U | src[BYTE_SWAP(0)] >> 4U); // g6
+                        tmp = src[BYTE_SWAP(2)];
+                        tmp |= (src[BYTE_SWAP(3)] & 0xFU) << 8U;
+                        *dst_b++ = S(tmp); // b6
+                        tmp = src[BYTE_SWAP(3)] >> 4U;
+                        src += 4;
+                        *dst_r++ = S(src[BYTE_SWAP(0)] << 4U | tmp); // r7
+                        tmp = src[BYTE_SWAP(1)];
+                        tmp |= (src[BYTE_SWAP(2)] & 0xFU) << 8U;
+                        *dst_g++ = S(tmp); // g7
+                        *dst_b++ = S(src[BYTE_SWAP(3)] << 4U | src[BYTE_SWAP(2)] >> 4U); // b7
+                        src += 4;
+                }
+        }
+#undef S
+}
+
+void
+r12l_to_gbrp12le(unsigned char *__restrict *__restrict out_data,
+                 const int *__restrict out_linesize,
+                 const unsigned char *__restrict in_data, int width, int height)
+{
+        r12l_to_gbrpXXle(out_data, out_linesize, in_data, width, height,
+                         DEPTH12, 2, 0, 1);
+}
+
+void
+r12l_to_gbrp16le(unsigned char *__restrict *__restrict out_data,
+                 const int *__restrict out_linesize,
+                 const unsigned char *__restrict in_data, int width, int height)
+{
+        r12l_to_gbrpXXle(out_data, out_linesize, in_data, width, height,
+                         DEPTH16, 2, 0, 1);
+}
+
+void
+r12l_to_rgbp12le(unsigned char *__restrict *__restrict out_data,
+                 const int *__restrict out_linesize,
+                 const unsigned char *__restrict in_data, int width, int height)
+{
+        r12l_to_gbrpXXle(out_data, out_linesize, in_data, width, height,
+                         DEPTH12, 0, 1, 2);
+}
+
+ALWAYS_INLINE static inline void
+gbrpXXle_to_r12l(unsigned char *const restrict out_data, const int out_pitch,
+                 const unsigned char *const restrict *const restrict in_data,
+                 const int *const restrict in_linesize, const int width,
+                 const int height, const int in_depth, int rind, int gind, int bind)
+{
+        assert((uintptr_t) in_linesize[0] % 2 == 0);
+        assert((uintptr_t) in_linesize[1] % 2 == 0);
+        assert((uintptr_t) in_linesize[2] % 2 == 0);
+
+#define S(x) ((x) >> (in_depth - 12))
+        // clang-format off
+        for (size_t y = 0; y < (size_t) height; ++y) {
+                const uint16_t *src_r = (const void *) (in_data[rind] + (in_linesize[rind] * y));
+                const uint16_t *src_g = (const void *) (in_data[gind] + (in_linesize[gind] * y));
+                const uint16_t *src_b = (const void *) (in_data[bind] + (in_linesize[bind] * y));
+                unsigned char *dst =
+                    (unsigned char *) out_data + (y * out_pitch);
+
+                OPTIMIZED_FOR (int x = 0; x < width; x += 8) {
+                        uint16_t tmpbuf[3][8];
+                        if (x + 8 >= width) {
+                                size_t remains = sizeof(uint16_t) * (width - x);
+                                memcpy(tmpbuf[0], src_r, remains);
+                                memcpy(tmpbuf[1], src_g, remains);
+                                memcpy(tmpbuf[2], src_b, remains);
+                                src_r = tmpbuf[0];
+                                src_g = tmpbuf[1];
+                                src_b = tmpbuf[2];
+                        }
+                        dst[BYTE_SWAP(0)] = S(*src_r) & 0xff;
+                        dst[BYTE_SWAP(1)] = (S(*src_g) & 0xf) << 4 | S(*src_r++) >> 8;
+                        dst[BYTE_SWAP(2)] = S(*src_g++) >> 4;
+                        dst[BYTE_SWAP(3)] = S(*src_b) & 0xff;
+                        dst[4 + BYTE_SWAP(0)] = (S(*src_r) & 0xf) << 4 | S(*src_b++) >> 8;
+                        dst[4 + BYTE_SWAP(1)] = S(*src_r++) >> 4;
+                        dst[4 + BYTE_SWAP(2)] = S(*src_g) & 0xff;
+                        dst[4 + BYTE_SWAP(3)] = (S(*src_b) & 0xf) << 4 | S(*src_g++) >> 8;
+                        dst[8 + BYTE_SWAP(0)] = S(*src_b++) >> 4;
+                        dst[8 + BYTE_SWAP(1)] = S(*src_r) & 0xff;
+                        dst[8 + BYTE_SWAP(2)] = (S(*src_g) & 0xf) << 4 | S(*src_r++) >> 8;
+                        dst[8 + BYTE_SWAP(3)] = S(*src_g++) >> 4;
+                        dst[12 + BYTE_SWAP(0)] = S(*src_b) & 0xff;
+                        dst[12 + BYTE_SWAP(1)] = (S(*src_r) & 0xf) << 4 | S(*src_b++) >> 8;
+                        dst[12 + BYTE_SWAP(2)] = S(*src_r++) >> 4;
+                        dst[12 + BYTE_SWAP(3)] = S(*src_g) & 0xff;
+                        dst[16 + BYTE_SWAP(0)] = (S(*src_b) & 0xf) << 4 | S(*src_g++) >> 8;
+                        dst[16 + BYTE_SWAP(1)] = S(*src_b++) >> 4;
+                        dst[16 + BYTE_SWAP(2)] = S(*src_r) & 0xff;
+                        dst[16 + BYTE_SWAP(3)] = (S(*src_g) & 0xf) << 4 | S(*src_r++) >> 8;
+                        dst[20 + BYTE_SWAP(0)] = S(*src_g++) >> 4;
+                        dst[20 + BYTE_SWAP(1)] = S(*src_b) & 0xff;
+                        dst[20 + BYTE_SWAP(2)] = (S(*src_r) & 0xf) << 4 | S(*src_b++) >> 8;
+                        dst[20 + BYTE_SWAP(3)] = S(*src_r++) >> 4;;
+                        dst[24 + BYTE_SWAP(0)] = S(*src_g) & 0xff;
+                        dst[24 + BYTE_SWAP(1)] = (S(*src_b) & 0xf) << 4 | S(*src_g++) >> 8;
+                        dst[24 + BYTE_SWAP(2)] = S(*src_b++) >> 4;
+                        dst[24 + BYTE_SWAP(3)] = S(*src_r) & 0xff;
+                        dst[28 + BYTE_SWAP(0)] = (S(*src_g) & 0xf) << 4 | S(*src_r++) >> 8;
+                        dst[28 + BYTE_SWAP(1)] = S(*src_g++) >> 4;
+                        dst[28 + BYTE_SWAP(2)] = S(*src_b) & 0xff;
+                        dst[28 + BYTE_SWAP(3)] = (S(*src_r) & 0xf) << 4 | S(*src_b++) >> 8;
+                        dst[32 + BYTE_SWAP(0)] = S(*src_r++) >> 4;
+                        dst[32 + BYTE_SWAP(1)] = S(*src_g) & 0xff;
+                        dst[32 + BYTE_SWAP(2)] = (S(*src_b) & 0xf) << 4 | S(*src_g++) >> 8;
+                        dst[32 + BYTE_SWAP(3)] = S(*src_b++) >> 4;
+                        dst += 36;
+                }
+        }
+        // clang-format on
+#undef S
+}
+
+/**
+ * test with:
+ * @code{.sh}
+ * uv -t testcard:c=R12L -c lavc:e=libx265 -p change_pixfmt:RGBA -d gl
+ * uv -t testcard:s=511x512c=R12L -c lavc:e=libx265 -p change_pixfmt:RGBA -d gl # irregular sz
+ * # optionally also `--param decoder-use-codec=R12L` to ensure decoded codec
+ * @endcode
+ */
+void
+gbrp12le_to_r12l(unsigned char *out_data, int out_pitch,
+                 const unsigned char *const *in_data, const int *in_linesize,
+                 int width, int height)
+{
+        gbrpXXle_to_r12l(out_data, out_pitch, in_data, in_linesize, width,
+                         height, DEPTH12, 2, 0, 1);
+}
+
+void
+gbrp16le_to_r12l(unsigned char *out_data, int out_pitch,
+                 const unsigned char *const *in_data, const int *in_linesize,
+                 int width, int height)
+{
+        gbrpXXle_to_r12l(out_data, out_pitch, in_data, in_linesize, width,
+                         height, DEPTH16, 2, 0, 1);
+}
+
+void
+rgbp12le_to_r12l(unsigned char *out_data, int out_pitch,
+                 const unsigned char *const *in_data, const int *in_linesize,
+                 int width, int height)
+{
+        gbrpXXle_to_r12l(out_data, out_pitch, in_data, in_linesize, width,
+                         height, DEPTH12, 0, 1, 2);
 }
 
 /* vim: set expandtab sw=8: */

@@ -76,6 +76,10 @@
 #include "config_win32.h"
 #endif // defined HAVE_CONFIG_H
 
+#ifndef _WIN32
+#include <pwd.h>
+#endif
+
 #include <errno.h>
 #include <inttypes.h>
 #include <stdatomic.h>
@@ -3761,7 +3765,7 @@ bool rtp_set_encryption_key(struct rtp *session, const char *passphrase)
         char *canonical_passphrase;
         u_char hash[16];
         MD5CTX context;
-        char *slash;
+        const char *slash;
 
         check_database(session);
         if (session->encryption_algorithm != NULL) {

@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>                        // for strcmp, strlen, strstr, strchr
+#include <libavutil/rational.h>           // for av_inv_q
 #include <list>
 #include <map>
 #include <regex>
@@ -70,7 +71,7 @@
 #include "utils/color_out.h"
 #include "utils/debug.h"                  // for debug_file_dump
 #include "utils/macros.h"
-#include "utils/misc.h"
+#include "utils/misc.h"                   // for get_framerate_[dn]
 #include "utils/string.h" // replace_all
 #include "utils/text.h"
 #include "video.h"
@@ -185,6 +186,8 @@ static void libavcodec_compress_done(void *state);
 static void setparam_default(AVCodecContext *, struct setparam_param *);
 static void setparam_h264_h265_av1(AVCodecContext *, struct setparam_param *);
 static void setparam_jpeg(AVCodecContext *, struct setparam_param *);
+static void setparam_jxs(AVCodecContext        *codec_ctx,
+                         struct setparam_param *param);
 static void setparam_oapv(AVCodecContext *, struct setparam_param *);
 static void setparam_vp8_vp9(AVCodecContext *, struct setparam_param *);
 static void set_codec_thread_mode(AVCodecContext *codec_ctx, struct setparam_param *param);
@@ -205,7 +208,7 @@ const char *get_vp9_encoder(bool /* rgb */) {
 codec_params_t
 get_codec_params(codec_t ug_codec)
 {
-        int capabilities_priority = 500 + (int) ug_codec;
+        const int gui_dfl_prio = 500 + (int) ug_codec;
         switch (ug_codec) {
         case H264: return {
                 [](bool is_rgb) { return is_rgb ? "libx264rgb" : "libx264"; },
@@ -234,7 +237,9 @@ get_codec_params(codec_t ug_codec)
                 600
         };
         case APV:
-                return { nullptr, 0, setparam_oapv, capabilities_priority };
+                return { nullptr, 0, setparam_oapv, gui_dfl_prio };
+        case JPEG_XS:
+                return { nullptr, 1, setparam_jxs, gui_dfl_prio };
         default:
                 break;
         }
@@ -242,12 +247,13 @@ get_codec_params(codec_t ug_codec)
         if (ug_codec == J2K) {
                 avg_bpp = 1;
         }
+        int gui_prio = gui_dfl_prio;
         if (ug_codec == PRORES) {
                 avg_bpp = 0.5;
-                capabilities_priority = 300; // perhaps to be before 5xx ?
+                gui_prio = 300;
         }
         return codec_params_t{ nullptr, avg_bpp, setparam_default,
-                               capabilities_priority };
+                               gui_prio };
 }
 
 struct aux_header {
@@ -400,6 +406,7 @@ void usage(bool full) {
                                ":slices=<slices>][safe]\n\t\t[:<lavc_opt>=<val>]*")
               << "\n\t" << SBOLD(SRED("-c libavcodec") << ":[full]help") << "\n";
         col() << "\nwhere\n";
+        col() << "\t" << SBOLD("fullhelp") << " show all supported codecs and optiona\n";
         col() << "\t" << SBOLD("<encoder>") << " specifies encoder (eg. nvenc or libx264 for H.264)\n";
         col() << "\t" << SBOLD("<codec_name>") << " - codec name (default MJPEG) if encoder name is not specified\n";
         col() << "\t" << SBOLD("[disable_]intra_refresh") << ", "
@@ -432,6 +439,9 @@ void usage(bool full) {
                 auto           ug_codec = (codec_t) i;
                 enum AVCodecID avID     = get_ug_to_av_codec(ug_codec);
                 if (avID == AV_CODEC_ID_NONE) { // unhandled or old FFMPEG -> codec id is flushed to 0 in compat
+                        continue;
+                }
+                if (!full && (ug_codec == CFHD || ug_codec == JPEG_XS)) {
                         continue;
                 }
                 char avail[1024];
@@ -948,7 +958,9 @@ bool set_codec_ctx_params(struct state_video_compress_libav *s, AVPixelFormat pi
         s->codec_ctx->width = desc.width;
         s->codec_ctx->height = desc.height;
         /* frames per second */
-        s->codec_ctx->time_base = (AVRational){1,(int) desc.fps};
+        s->codec_ctx->time_base = (AVRational) { get_framerate_d(desc.fps),
+                                                 get_framerate_n(desc.fps) };
+        s->codec_ctx->framerate = av_inv_q(s->codec_ctx->time_base);
         s->codec_ctx->gop_size = s->requested_gop;
         s->codec_ctx->max_b_frames = 0;
 
@@ -961,6 +973,7 @@ bool set_codec_ctx_params(struct state_video_compress_libav *s, AVPixelFormat pi
             params.slices, s->codec_ctx->codec_id == AV_CODEC_ID_FFV1
                                ? 16
                                : DEFAULT_SLICE_COUNT);
+        MSG(VERBOSE, "Setting slices to %d\n", s->codec_ctx->slices);
         s->header_inserter = params.header_inserter_req == 1;
 
         // set user supplied parameters
@@ -1803,6 +1816,49 @@ setparam_oapv(AVCodecContext */*codec_ctx*/, struct setparam_param *param)
                                "profile=%s", profile);
         assert(neeeded < (int) sizeof oapv_params);
         param->lavc_opts["oapv-params"] = oapv_params;
+}
+
+static void
+setparam_jxs(AVCodecContext * /* codec_ctx */, struct setparam_param *param)
+{
+        const struct AVPixFmtDescriptor *pd = av_pix_fmt_desc_get(param->av_pix_fmt);
+        if (pd->log2_chroma_w == 0 && pd->log2_chroma_h == 0 &&
+            (pd->flags & AV_PIX_FMT_FLAG_RGB) == 0) {
+                MSG(ERROR,
+                    "JPEG XS is going to to encode YUV 444 is discouraged "
+                    "- use jpegxs encoder directly!\n");
+        }
+
+        unsigned decomp_v = 0;
+        if (param->lavc_opts.find("decomp_v") == param->lavc_opts.end()) {
+                unsigned height = param->desc.height;
+                while (height % 2 == 0 && decomp_v < 2) {
+                        decomp_v += 1;
+                        height /= 2;
+                }
+                char num[2];
+                snprintf_ch(num, "%u", decomp_v);
+                param->lavc_opts["decomp_v"] = num;
+        } else {
+                decomp_v = stoi(param->lavc_opts.at("decomp_v"));
+        }
+
+        if (param->slices == -1) {
+                int slice_height = 1 << decomp_v;
+                param->slices = param->desc.height / slice_height;
+        }
+
+        if (param->lavc_opts.find("decomp_h") == param->lavc_opts.end()) {
+                unsigned decomp_h = 0;
+                unsigned width    = param->desc.width;
+                while (width % 2 == 0 && decomp_h < 5) {
+                        decomp_h += 1;
+                        width /= 2;
+                }
+                char num[2];
+                snprintf_ch(num, "%u", decomp_h);
+                param->lavc_opts["decomp_h"] = num;
+        }
 }
 
 static void configure_amf([[maybe_unused]] AVCodecContext *codec_ctx, [[maybe_unused]] struct setparam_param *param) {

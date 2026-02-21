@@ -1,9 +1,9 @@
 /**
- * @file   compat/platform_pipe.h
- * @author Martin Pulec     <pulec@cesnet.cz>
+ * @file   jpegxs/jpegxs_conv.h
+ * @author Jan Frejlach     <536577@mail.muni.cz>
  */
 /*
- * Copyright (c) 2015 CESNET, z. s. p. o.
+ * Copyright (c) 2026 CESNET
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,38 +35,35 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef platform_pipe_h
-#define platform_pipe_h
+#ifndef JPEGXS_CONV_H
+#define JPEGXS_CONV_H
 
-#include "config_unix.h"
-#include "config_win32.h"
+#include <svt-jpegxs/SvtJpegxs.h>
 
-#include "compat/net.h" //for fd_t
+#include "types.h"
 
 #ifdef __cplusplus
 extern "C" {
-#endif // __cplusplus
-
-int platform_pipe_init(fd_t pipe[2]);
-void platform_pipe_close(fd_t pipe);
-
-#ifdef _WIN32
-#define PLATFORM_PIPE_READ(fd, buf, len) recv(fd, buf, len, 0)
-#define PLATFORM_PIPE_WRITE(fd, buf, len) send(fd, buf, len, 0)
-#else
-// the fallback implementation of platform_pipe is a plain pipe for which
-// doesn't work send()/recv(). read() and write(), however, works for both
-// socket and pipe (but doesn't so in Windows, therefore there is used
-// send()/recv()).
-//
-// PLATFORM_PIPE_READ()/PLATFORM_PIPE_WRITE() can be also safely be used if
-// unsure if underlying fd is a socket or a pipe.
-#define PLATFORM_PIPE_READ read
-#define PLATFORM_PIPE_WRITE write
 #endif
+
+struct uv_to_jpegxs_conversion {
+        codec_t src;
+        ColourFormat_t dst;
+        void (*convert)(const uint8_t *src, int width, int height, svt_jpeg_xs_image_buffer_t *dst);
+};
+
+struct jpegxs_to_uv_conversion {
+        ColourFormat_t src;
+        codec_t dst;
+        void (*convert)(const svt_jpeg_xs_image_buffer_t *src, int width, int height, uint8_t *dst);
+};
+
+const struct uv_to_jpegxs_conversion *get_uv_to_jpegxs_conversion(codec_t codec);
+
+const struct jpegxs_to_uv_conversion *get_jpegxs_to_uv_conversion(codec_t codec);
 
 #ifdef __cplusplus
 }
-#endif // __cplusplus
+#endif
 
-#endif /* defined platform_pipe_h */
+#endif // JPEGXS_CONV_H
