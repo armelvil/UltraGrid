@@ -44,7 +44,9 @@
 
 #define COLOR_OUT_STRINGIFY(A) #A
 
-#define TERM_RESET      "\033[0m"
+#define TERM_RESET      "\033[0m"        ///< resets all (color, bold...)
+#define TERM_NORMAL_INTENSITY "\033[22m" ///< resets just bold/underline
+#define TERM_UNDERLINE_RESET "\033[24m"  ///< resets underline
 #define TERM_BOLD       "\033[1m"
 #define TERM_UNDERLINE  "\033[4m"
 #define TERM_FG_RED     "\033[31m"
@@ -67,8 +69,8 @@
 #define T256_FG(col, x) T256_FG_SYM(col) x TERM_FG_RESET
 #define S256_FG(col, x) T256_FG(col, << x <<)
 
-#define TBOLD(x) TERM_BOLD x TERM_RESET
-#define TUNDERLINE(x) TERM_UNDERLINE x TERM_RESET
+#define TBOLD(x) TERM_BOLD x TERM_NORMAL_INTENSITY
+#define TUNDERLINE(x) TERM_UNDERLINE x TERM_UNDERLINE_RESET
 #define TGREEN(x) TERM_FG_GREEN x TERM_FG_RESET
 #define TYELLOW(x) TERM_FG_YELLOW x TERM_FG_RESET
 #define TMAGENTA(x) TERM_FG_MAGENTA x TERM_FG_RESET

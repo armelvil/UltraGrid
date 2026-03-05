@@ -1,9 +1,14 @@
-FLAGS ?= -Ofast -g
+FLAGS ?= -O3 -g
 SRCDIR ?= ..
-COMMON_FLAGS = $(FLAGS) -D_GNU_SOURCE -I$(SRCDIR)/src/
+LAVC_CFLAGS = $(shell pkg-config -cflags libavcodec 2>/dev/null)
+LAVC_LIBS = $(shell pkg-config -libs libavcodec 2>/dev/null)
+COMMON_FLAGS = $(FLAGS) $(LAVC_CFLAGS) -D_GNU_SOURCE -I$(SRCDIR)/src/
 MKDIR_P = mkdir -p
 vpath %.c $(SRCDIR) $(SRCDIR)/tools
 vpath %.cpp $(SRCDIR) $(SRCDIR)/tools
+
+CFLAGS   := $(CFLAGS) -std=gnu2x
+CXXFLAGS := $(CXXFLAGS) -std=gnu++17
 
 ARCH := $(shell uname -m)
 ifeq ($(ARCH), x86_64)
@@ -26,14 +31,14 @@ all: $(TARGETS)
 
 %.o : %.c
 	$(MKDIR_P) $(dir $@)
-	$(CC) $(COMMON_FLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(COMMON_FLAGS) -c $< -o $@
 
 %.o : %.cpp
 	$(MKDIR_P) $(dir $@)
-	$(CXX) -std=c++17 $(COMMON_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(COMMON_FLAGS) -c $< -o $@
 
 astat_test: astat.cpp src/compat/platform_pipe.o
-	c++ -g -DASTAT_DEBUG -DDEFINE_TEST_MAIN $(COMMON_FLAGS) $^ -pthread -o astat_test
+	c++ -g $(CXXFLAGS) -DASTAT_DEBUG -DDEFINE_TEST_MAIN $(COMMON_FLAGS) $^ -pthread -o astat_test
 
 astat_lib: astat.a
 
@@ -43,27 +48,28 @@ astat.a: astat.o src/compat/platform_pipe.o
 benchmark_ff_convs.o: benchmark_ff_convs.c ../src/libavcodec/from_lavc_vid_conv.c \
 	../src/libavcodec/to_lavc_vid_conv.c
 	$(MKDIR_P) $(dir $@)
-	$(CC) $(COMMON_FLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(COMMON_FLAGS) -c $< -o $@
 
 benchmark_ff_convs: benchmark_ff_convs.o $(COMMON_OBJS) \
 	src/libavcodec/utils.o src/libavcodec/lavc_common.o \
-	src/utils/parallel_conv.o src/utils/worker.o src/utils/thread.o
-	$(CXX) $^ -o $@ -lavutil -lavcodec -pthread
+	src/utils/parallel_conv.o src/utils/worker.o src/utils/thread.o \
+	src/from_planar.o src/to_planar.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LAVC_LIBS) -lavutil -pthread
 
 convert: convert.o $(COMMON_OBJS)
-	$(CXX) $^ -o convert
+	$(CXX) $(CXXFLAGS) $^ -o convert
 
 decklink_temperature: decklink_temperature.cpp ext-deps/DeckLink/Linux/DeckLinkAPIDispatch.o
-	$(CXX) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -o $@
 
 mux_ivf: mux_ivf.o
-	$(CC) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 uyvy2yuv422p: uyvy2yuv422p.c
-	$(CC) -g -std=c99 -Wall $< -o $@
+	$(CC) $(CFLAGS) -g -Wall $< -o $@
 
 thumbnailgen: thumbnailgen.o ipc_frame.o ipc_frame_unix.o
-	$(CXX) $^ -o $@ -ljpeg
+	$(CXX) $(CXXFLAGS) $^ -o $@ -ljpeg
 
 clean:
 	$(RM) $(TARGETS) $(OBJS)

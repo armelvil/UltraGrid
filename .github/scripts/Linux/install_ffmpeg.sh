@@ -115,6 +115,7 @@ build_install() {
                 --enable-libspeex \
                 --enable-libsvtav1 \
                 --enable-libsvthevc \
+                --enable-libsvtjpegxs \
                 --enable-libsvtvp9 \
                 --enable-libvpl \
                 --enable-libvpx \

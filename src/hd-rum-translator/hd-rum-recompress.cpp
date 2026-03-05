@@ -39,12 +39,8 @@
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif
 
+#include <cassert>
 #include <cinttypes>
 #include <chrono>
 #include <memory>
@@ -66,7 +62,7 @@
 
 namespace {
 struct compress_state_deleter{
-        void operator()(struct compress_state *s){ compress_done(s); }
+        void operator()(struct compress_state *s) const{ compress_done(s); }
 };
 }
 
@@ -81,12 +77,12 @@ struct recompress_output_port {
 
         std::unique_ptr<ultragrid_rtp_video_rxtx> video_rxtx;
         std::string host;
-        int tx_port;
+        int tx_port = 0;
 
         std::chrono::steady_clock::time_point t0{std::chrono::steady_clock::now()};
-        int frames;
+        int frames = 0;
 
-        bool active;
+        bool active = false;
 };
 
 struct recompress_worker_ctx {
@@ -100,7 +96,7 @@ struct recompress_worker_ctx {
 };
 
 struct state_recompress {
-        struct module *parent;
+        struct module *parent = nullptr;
         std::mutex mut;
         std::map<std::string, recompress_worker_ctx> workers;
         std::vector<std::pair<std::string, int>> index_to_port;
@@ -131,7 +127,7 @@ recompress_output_port::recompress_output_port(
 
         // UltraGrid RTP
         params["decoder_mode"].l = VIDEO_NORMAL;
-        params["display_device"].ptr = NULL;
+        params["display_device"].ptr = nullptr;
 
         auto rxtx = video_rxtx::create("ultragrid_rtp", params);
         if (this->host.find(':') != std::string::npos) {
@@ -328,7 +324,7 @@ struct state_recompress *recompress_init(struct module *parent) {
         return state;
 }
 
-void recompress_process_async(state_recompress *s, std::shared_ptr<video_frame> frame){
+void recompress_process_async(state_recompress *s, const std::shared_ptr<video_frame>& frame){
         PROFILE_FUNC;
         std::lock_guard<std::mutex> lock(s->mut);
         for(const auto& worker : s->workers){

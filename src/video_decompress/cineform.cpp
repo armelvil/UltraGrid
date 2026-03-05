@@ -3,7 +3,7 @@
  * @author Martin Piatka     <piatka@cesnet.cz>
  */
 /*
- * Copyright (c) 2019-2023 CESNET, z. s. p. o.
+ * Copyright (c) 2019-2026 CESNET, zájmové sdružení právnických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,13 +35,7 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif // HAVE_CONFIG_H
-
+#include <cassert>
 #include <memory>
 #include <vector>
 

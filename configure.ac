@@ -12,6 +12,9 @@ PARENT=`echo $PWD | sed -e 's%/[[^/]]*$%%'`
 
 AC_DEFINE_UNQUOTED([CONFIG_FLAGS], ["$configure_flags"], [Flags passed to configure])
 
+if expr "x$CFLAGS" : 'x.*-O' >/dev/null; then O3=""; else O3="-O3"; fi
+AC_SUBST(O3)
+
 AC_CANONICAL_HOST
 AC_PROG_CC
 AC_PROG_CPP
@@ -187,6 +190,12 @@ if test $system = Windows; then
         fi
 fi
 
+clang_ver_major=$($CC --version | sed -n \
+ '/clang version/ s/.*version \(@<:@0-9@:>@*\).*/\1/p')
+if test "${clang_ver_major:-17}" -lt 17; then
+        CFLAGS="${CFLAGS:+$CFLAGS }-std=gnu2x"
+fi
+
 LINKER=$CXX
 
 AC_SUBST(LINKER)
@@ -229,13 +238,6 @@ fi
 CFLAGS="$CFLAGS${ARCH:+ $ARCH}"
 CXXFLAGS="$CXXFLAGS${ARCH:+ $ARCH}"
 LDFLAGS="$LDFLAGS${ARCH:+ $ARCH}"
-
-if expr "x$CFLAGS" : 'x.*-O' >/dev/null; then
-        OFAST=""
-else
-        OFAST="-Ofast"
-fi
-AC_SUBST(OFAST)
 
 AC_CHECK_HEADERS([termios.h])
 
@@ -2412,13 +2414,13 @@ AC_ARG_ENABLE(jpegxs,
    [jpegxs_req=$build_default]
 )
 
-PKG_CHECK_MODULES([JPEGXS], [SvtJpegxs >= 0.10],
+PKG_CHECK_MODULES([JPEGXS], [SvtJpegxs >= 0.9],
     [FOUND_JPEGXS_DEP=yes],
     [FOUND_JPEGXS_DEP=no]
 )
 
 if test "$jpegxs_req" != no -a "$FOUND_JPEGXS_DEP" = yes; then
-        JPEGXS_VIDEO="src/jpegxs/from_jpegxs_conv.o src/jpegxs/to_jpegxs_conv.o"
+        JPEGXS_VIDEO="src/jpegxs/to_jpegxs_conv.o"
         JPEGXS_COMPRESS_OBJ="$JPEGXS_VIDEO src/video_compress/jpegxs.o"
         JPEGXS_DECOMPRESS_OBJ="$JPEGXS_VIDEO src/video_decompress/jpegxs.o"
         add_module vcompress_jpegxs "$JPEGXS_COMPRESS_OBJ" "$JPEGXS_LIBS"
@@ -2427,6 +2429,8 @@ if test "$jpegxs_req" != no -a "$FOUND_JPEGXS_DEP" = yes; then
 else
         jpegxs=no
 fi
+
+ENSURE_FEATURE_PRESENT([${jpegxs_req?}], [${jpegxs?}], [SVT-JPEG-XS not found])
 
 # -------------------------------------------------------------------------------------------------
 # GPUJPEG
@@ -3513,7 +3517,8 @@ fi
 AC_SUBST(REFLECTOR_TARGET)
 
 # ------------------------------------------------------------------------------
-# Non-essential objs
+# Non-essential objs - these should be the objects that no other object depend
+# on, otherwise should be placed directly to Makefile.in COMMON_OBJS
 # ------------------------------------------------------------------------------
 AC_ARG_ENABLE(object,
         AS_HELP_STRING([--enable-object], [enable specific object(s) ]
@@ -3585,7 +3590,8 @@ if test "$build_default" != no || test "$req_files" = all; then
 fi
 
 AC_ARG_WITH(object-remove,
-        AS_HELP_STRING([--with-object-remove], [remove and object (delimit more with '|')]),
+        AS_HELP_STRING([--with-object-remove=src/.../name.o],
+        [remove an object from build (delimit more with '|')]),
         [removed_files=$withval],
         [removed_files=])
 

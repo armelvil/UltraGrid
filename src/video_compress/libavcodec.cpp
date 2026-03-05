@@ -421,7 +421,7 @@ void usage(bool full) {
         col() << "\t" << SBOLD("<crf>") << " specifies CRF factor (only for libx264/libx265)\n";
         col() << "\t" << SBOLD("<subsampling>") << " may be one of 444, 422, or 420, default 420 for progressive, 422 for interlaced\n";
         col() << "\t" << SBOLD("<depth>") << " enforce specified compression bit depth\n";
-        col() << "\t" << SBOLD("rgb|yuv") << " enforce specified color space compreesion\n";
+        col() << "\t" << SBOLD("rgb|yuv") << " enforce specified color space compression\n";
         col() << "\t" << SBOLD("<threads>") << " can be \"no\", or \"<number>[F][S][n]\" where 'F'/'S' indicate if frame/slice thr. should be used, both can be used (default slice), 'n' means none;\n";
         col() << "\t" <<       "         "  << " use a comma to add also number of conversion threads (eg. \"0S,8\"), default: number of logical cores\n";
         col() << "\t" << SBOLD("<slices>") << " number of slices to use (default: " << DEFAULT_SLICE_COUNT << ")\n";
@@ -1825,8 +1825,10 @@ setparam_jxs(AVCodecContext * /* codec_ctx */, struct setparam_param *param)
         if (pd->log2_chroma_w == 0 && pd->log2_chroma_h == 0 &&
             (pd->flags & AV_PIX_FMT_FLAG_RGB) == 0) {
                 MSG(ERROR,
-                    "JPEG XS is going to to encode YUV 444 is discouraged "
+                    "JPEG XS is going to encode YUV 444, which is discouraged "
                     "- use jpegxs encoder directly!\n");
+                MSG(NOTICE, "Alternatively, consider adding '-c lavc..." TBOLD(
+                                ":subsampling=422") "' to your command...\n");
         }
 
         unsigned decomp_v = 0;

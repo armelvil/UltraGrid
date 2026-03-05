@@ -3,7 +3,7 @@
  * @author Martin Pulec     <pulec@cesnet.cz>
  */
 /*
- * Copyright (c) 2021-2024 CESNET
+ * Copyright (c) 2021-2026 CESNET, zájmové sdružení právnických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -62,8 +62,8 @@ EXTERNC void debug_file_dump(const char *key,
 #define DEBUG_TIMER_START(name) DEBUG_TIMER_EVENT(name##_start);
 #define DEBUG_TIMER_STOP(name) \
         DEBUG_TIMER_EVENT(name##_stop); \
-        log_msg(LOG_LEVEL_DEBUG2, "%s duration: %lf s\n", #name, \
-                (name##_stop - name##_start) / NS_IN_SEC_DBL) \
+        log_msg(LOG_LEVEL_DEBUG2, "%s duration: %lf ms\n", #name, \
+                NS_TO_MS((double)(name##_stop - name##_start)) ) \
                 // NOLINT(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
 
 #else

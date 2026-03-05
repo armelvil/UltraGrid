@@ -6,7 +6,7 @@
  * @brief API for video decompress drivers
  */
 /*
- * Copyright (c) 2011-2025 CESNET
+ * Copyright (c) 2011-2026 CESNET, zájmové sdružení právnických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -88,7 +88,7 @@ typedef  int (*decompress_reconfigure_t)(void * state, struct video_desc desc,
                 int rshift, int gshift, int bshift, int pitch, codec_t out_codec);
 
 typedef enum {
-        DECODER_NO_FRAME = 0, //Frame not decoded yet 
+        DECODER_NO_FRAME = 0, ///< Frame not decoded (yet?)
         DECODER_GOT_FRAME,    //Frame decoded and written to destination
         DECODER_GOT_CODEC,    ///< Internal pixel format was determined
         DECODER_UNSUPP_PIXFMT, ///< Decoder can't decode to selected out_codec

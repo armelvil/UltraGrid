@@ -3,7 +3,7 @@
  * @author Martin Piatka <piatka@cesnet.cz>
  */
 /*
- * Copyright (c) 2024 CESNET z.s.p.o.
+ * Copyright (c) 2024-2026 CESNET, zájmové sdružení právnických osob
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, is permitted provided that the following conditions
@@ -41,13 +41,8 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cassert>
+#include <cstring>
 
 #include <unistd.h>
 #include <xf86drm.h>
@@ -57,6 +52,8 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include <fcntl.h>
+#include <sys/mman.h>
 
 #include "debug.h"
 #include "host.h"
@@ -65,7 +62,6 @@
 #include "utils/color_out.h"
 #include "utils/macros.h"
 #include "utils/misc.h"
-#include "utils/text.h"
 #include "utils/string_view_utils.hpp"
 #include "video.h"
 #include "video_codec.h"
@@ -1118,21 +1114,21 @@ static bool display_drm_reconfigure(void *state, struct video_desc desc)
 
 static void display_drm_probe(struct device_info **available_cards, int *count, void (**deleter)(void *)) {
         UNUSED(deleter);
-        *available_cards = NULL;
+        *available_cards = nullptr;
         *count = 0;
 }
 
 static const struct video_display_info display_drm_info = {
         display_drm_probe,
         display_drm_init,
-        NULL, // _run
+        nullptr, // _run
         display_drm_done,
         display_drm_getf,
         display_drm_putf,
         display_drm_reconfigure,
         display_drm_get_property,
-        NULL, // _put_audio_frame
-        NULL, // _reconfigure_audio
+        nullptr, // _put_audio_frame
+        nullptr, // _reconfigure_audio
         MOD_NAME,
 };
 

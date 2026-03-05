@@ -95,7 +95,8 @@ case "$RUNNER_OS" in
                         FEATURES="$FEATURES --disable-qt"
                 else
                         FEATURES="$FEATURES $CUDA_FEATURES \
---enable-lavc-hw-accel-vdpau"
+                          --enable-lavc-hw-accel-vdpau \
+                          --enable-jpegxs"
                 fi
                 ;;
         macOS)
@@ -107,7 +108,11 @@ case "$RUNNER_OS" in
 "
                 ;;
         Windows)
-                FEATURES="$FEATURES $CUDA_FEATURES --enable-dshow --enable-spout --enable-wasapi"
+                FEATURES="$FEATURES $CUDA_FEATURES \
+                  --enable-dshow \
+                  --enable-jpegxs \
+                  --enable-spout \
+                  --enable-wasapi"
                 ;;
         *)
                 echo "Unexpected runner OS: ${RUNNER_OS:-(undefined)}" >&2

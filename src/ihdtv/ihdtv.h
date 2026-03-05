@@ -8,7 +8,7 @@
  *          Dalibor Matura   <255899@mail.muni.cz>
  *          Ian Wesley-Smith <iwsmith@cct.lsu.edu>
  *
- * Copyright (c) 2005-2209 CESNET z.s.p.o.
+ * Copyright (c) 2005-2026 CESNET, zájmové sdružení právnických osob
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, is permitted provided that the following conditions
@@ -46,19 +46,15 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif // HAVE_CONFIG_H
-
 #ifndef _WIN32
 
 #ifndef _IHDTV_H_
 #define _IHDTV_H_
 
 #include <ctype.h>
+#include <stdint.h>
 
+#include "compat/net.h" //for sockaaddr_in, in_addr
 #include "types.h"
 
 #ifdef __cplusplus

@@ -26,9 +26,9 @@
  *
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
 #include "md5.h"
 
 /*

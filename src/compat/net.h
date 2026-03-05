@@ -42,16 +42,40 @@
 #define COMPAT_NET_H_EF7499D8_4939_4F86_A585_2EED8221D056
 
 // IWYU pragma: begin_exports
+#if HAVE_CONFIG_H
+#include "config.h" //for HAVE_IPv6
+#endif
 #ifdef _WIN32
 #include <winsock2.h>
+#include <ws2tcpip.h> // for socklen_t
+#include <io.h> // for read, write
 typedef SOCKET fd_t;
+#define CLOSESOCKET closesocket
+#define SHUT_RD SD_RECEIVE
+#define SHUT_WR SD_SEND
+#define SHUT_RDWR SD_BOTH
+#define MAXHOSTNAMELEN	256
+typedef unsigned int	in_addr_t;
+typedef char	*caddr_t;
+
+struct msghdr {
+        caddr_t		msg_name;
+        int		msg_namelen;
+        struct iovec	*msg_iov;
+        int		msg_iovlen;
+        caddr_t		msg_accrights;
+        int		msg_accrightslen;
+};
 #else
 #include <arpa/inet.h>      // for htonl, ntohl
 #include <netdb.h>          // for getaddrinfo
 #include <netinet/in.h>     // for sockaddr_in[6]
 #include <sys/socket.h>     // for sockaddr, sockaddr_storage
+#include <sys/param.h>     // for MAXHOSTNAMELEN
+#include <unistd.h>         // for close
 typedef int fd_t;
 #define INVALID_SOCKET (-1)
+#define CLOSESOCKET close
 #endif
 // IWYU pragma: end_exports
 

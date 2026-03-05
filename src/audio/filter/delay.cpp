@@ -35,12 +35,6 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif /* HAVE_CONFIG_H */
-
 #include <memory>
 #include <string_view>
 
@@ -51,7 +45,6 @@
 #include "lib_common.h"
 #include "messaging.h"                  // for free_message, new_response
 #include "utils/ring_buffer.h"
-#include "utils/misc.h"
 #include "utils/string_view_utils.hpp"
 
 namespace{

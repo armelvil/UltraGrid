@@ -105,7 +105,7 @@ while [ $i -lt $test_count ]; do
         echo "Starting: \"timeout $timeout $exec $args\""
         timeout -k 10 $timeout $exec $args
         rc=$?
-        echo "Finished: \"timeout $timeout $exec $args\" with RC %rc"
+        echo "Finished: \"timeout $timeout $exec $args\" with RC $rc"
 
         if [ $rc = 124 ]; then
                 if ! expr -- "$opts" : '.*should_timeout' >/dev/null; then

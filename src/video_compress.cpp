@@ -6,7 +6,7 @@
  * @brief Video compress functions.
  */
 /*
- * Copyright (c) 2011-2025 CESNET
+ * Copyright (c) 2011-2026 CESNET, zájmové sdružení právnických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -69,6 +69,9 @@ using namespace std;
 
 struct compress_state;
 
+static video_frame pop_retry_frame{};
+shared_ptr<video_frame> vcomp_pop_retry(&pop_retry_frame, [](video_frame *){});
+
 namespace {
 /**
  * @brief This structure represents real internal compress state
@@ -77,7 +80,7 @@ struct compress_state_real {
 private:
         compress_state_real(struct module *parent, const char *config_string);
         void          start(struct compress_state *proxy);
-        void          async_consumer(struct compress_state *s);
+        void          async_frame_consumer(struct compress_state *s);
         void          async_tile_consumer(struct compress_state *s);
         thread        asynch_consumer_thread;
 public:
@@ -281,7 +284,7 @@ compress_state_real::compress_state_real(struct module *parent, const char *conf
 void compress_state_real::start(struct compress_state *proxy)
 {
         if (funcs->compress_frame_async_push_func) {
-                asynch_consumer_thread = thread(&compress_state_real::async_consumer, this, proxy);
+                asynch_consumer_thread = thread(&compress_state_real::async_frame_consumer, this, proxy);
         } else if (funcs->compress_tile_async_push_func){
                 asynch_consumer_thread = thread(&compress_state_real::async_tile_consumer, this, proxy);
         }
@@ -541,6 +544,10 @@ void compress_state_real::async_tile_consumer(struct compress_state *s)
                                 return;
                         }
 
+                        if (ret == vcomp_pop_retry) {
+                                fail = true;
+                        }
+
                         if(ret->seq > expected_seq){
                                 log_msg(LOG_LEVEL_ERROR,
                                                 "Expected sequence number %u but got %u!\n",
@@ -572,18 +579,20 @@ void compress_state_real::async_tile_consumer(struct compress_state *s)
         }
 }
 
-void compress_state_real::async_consumer(struct compress_state *s)
+void compress_state_real::async_frame_consumer(struct compress_state *s)
 {
         set_thread_name(__func__);
         while (true) {
                 auto frame = funcs->compress_frame_async_pop_func(state[0]);
+                if (frame == vcomp_pop_retry) {
+                        continue;
+                }
                 if (!discard_frames) {
                         s->queue.push(frame);
 
                 }
                 if (!frame) {
                         return;
-
                 }
 
         }

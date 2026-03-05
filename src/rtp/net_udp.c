@@ -39,18 +39,18 @@
  * SUCH DAMAGE.
  */
 
-/* If this machine supports IPv6 the symbol HAVE_IPv6 should */
-/* be defined in either config_unix.h or config_win32.h. The */
-/* appropriate system header files should also be included   */
-/* by those files.                                           */
+/* If this machine supports IPv6 the symbol HAVE_IPv6 should be defined in config.h
+ * The appropriate system header files are included in compat/net.h
+ */
 
 #include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-
+#include <assert.h>
 #include <pthread.h>
 #include <stdalign.h>
 #include <stdbool.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <errno.h>
 #include <stdint.h>       // for uint16_t, uintmax_t
 
 #ifndef _WIN32

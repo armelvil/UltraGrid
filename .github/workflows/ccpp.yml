@@ -109,6 +109,8 @@ jobs:
     - name: Test AppImage with Docker images
       run: |
         .github/scripts/Linux/docker_appimage_tests.sh
+    - name: Validate AppImage images
+      run: |
         curl -LSf -O https://raw.githubusercontent.com/AppImage/pkg2appimage/\
         master/appdir-lint.sh -O https://raw.githubusercontent.com/probonopd/\
         AppImages/master/excludelist

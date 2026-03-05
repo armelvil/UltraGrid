@@ -58,9 +58,16 @@ benchmark_from_lavc_convs()
                 av_frame_get_buffer(in, 0);
                 struct timespec t0, t1;
                 timespec_get(&t0, TIME_UTC);
-                conv->convert((struct av_conv_data){
-                    out, in, vc_get_linesize(W, conv->uv_codec),
-                    DEFAULT_RGB_SHIFT_INIT, CS_DFL, 1 });
+                struct av_conv_data d = {
+                        .dst_buffer       = out,
+                        .in_frame         = in,
+                        .pitch            = vc_get_linesize(W, conv->uv_codec),
+                        .rgb_shift        = DEFAULT_RGB_SHIFT_INIT,
+                        .cs_coeffs        = CS_DFL,
+                        .lmt_rng          = 1,
+                        .from_planar_func = conv->from_planar_func,
+                };
+                conv->convert(d);
                 timespec_get(&t1, TIME_UTC);
                 printf("%s->%s:\t%.2f ms\n",
                        av_get_pix_fmt_name(conv->av_codec),

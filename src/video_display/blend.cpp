@@ -40,14 +40,12 @@
  * Rewrite the code to have more clear state machine!
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
 #include "debug.h"
 #include "lib_common.h"
 #include "video.h"
 #include "video_display.h"
 
+#include <cassert>
 #include <cinttypes>
 #include <condition_variable>
 #include <chrono>

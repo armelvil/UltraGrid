@@ -34,7 +34,7 @@ LIBS         += @LIBS@ @CUDA_LIB@ @MATHLIBS@ -lm -pthread
 INC           = -Isrc -I$(srcdir)/src -I$(srcdir)/test \
                 @INC@
 CUDA_INC      = @CUDA_INC@ -Isrc -I$(srcdir)/src
-OFAST         = @OFAST@
+OMAX          = @O3@
 DECKLINK_PATH = @DECKLINK_PATH@
 DYLIBBUNDLER  = @DYLIBBUNDLER@
 DYLIBBUNDLER_FLAGS += @DYLIBBUNDLER_FLAGS@
@@ -136,10 +136,12 @@ COMMON_OBJS     = \
 		src/crypto/md5.o \
 		src/crypto/random.o \
 		src/export.o \
+		src/from_planar.o \
 		src/ihdtv/ihdtv.o \
 		src/lib_common.o \
 		src/module.o \
 		src/pixfmt_conv.o \
+		src/to_planar.o \
 		src/ug_runtime_error.o \
 		tools/ipc_frame_ug.o \
 		tools/ipc_frame_unix.o \
@@ -310,27 +312,32 @@ CXX_NO_SUFF   = $(CXX_NO_SUFF_$(VERBOSE))
 
 src/jpegxs/to_jpegxs_conv.o: src/jpegxs/to_jpegxs_conv.c
 	$(MKDIR_P) $$(dirname $@)
-	$(CC_NO_SUFF) $(CFLAGS) $(OFAST) $(INC) -MD -c $(srcdir)/src/jpegxs/to_jpegxs_conv.c -o $@
-	$(POSTPROCESS_DEPS)
-
-src/jpegxs/from_jpegxs_conv.o: src/jpegxs/from_jpegxs_conv.c
-	$(MKDIR_P) $$(dirname $@)
-	$(CC_NO_SUFF) $(CFLAGS) $(OFAST) $(INC) -MD -c $(srcdir)/src/jpegxs/from_jpegxs_conv.c -o $@
+	$(CC_NO_SUFF) $(CFLAGS) $(OMAX) $(INC) -MD -c $(srcdir)/src/jpegxs/to_jpegxs_conv.c -o $@
 	$(POSTPROCESS_DEPS)
 
 src/libavcodec/from_lavc_vid_conv.o: src/libavcodec/from_lavc_vid_conv.c
 	$(MKDIR_P) $$(dirname $@)
-	$(CC_NO_SUFF) $(CFLAGS) $(OFAST) $(INC) -MD -c $(srcdir)/src/libavcodec/from_lavc_vid_conv.c -o $@
+	$(CC_NO_SUFF) $(CFLAGS) $(OMAX) $(INC) -MD -c $(srcdir)/src/libavcodec/from_lavc_vid_conv.c -o $@
 	$(POSTPROCESS_DEPS)
 
 src/libavcodec/to_lavc_vid_conv.o: src/libavcodec/to_lavc_vid_conv.c
 	$(MKDIR_P) $$(dirname $@)
-	$(CC_NO_SUFF) $(CFLAGS) $(OFAST) $(INC) -MD -c $(srcdir)/src/libavcodec/to_lavc_vid_conv.c -o $@
+	$(CC_NO_SUFF) $(CFLAGS) $(OMAX) $(INC) -MD -c $(srcdir)/src/libavcodec/to_lavc_vid_conv.c -o $@
 	$(POSTPROCESS_DEPS)
 
 src/pixfmt_conv.o: src/pixfmt_conv.c
 	$(MKDIR_P) $$(dirname $@)
-	$(CC_NO_SUFF) $(CFLAGS) $(OFAST) $(INC) -MD -c $(srcdir)/src/pixfmt_conv.c -o $@
+	$(CC_NO_SUFF) $(CFLAGS) $(OMAX) $(INC) -MD -c $(srcdir)/src/pixfmt_conv.c -o $@
+	$(POSTPROCESS_DEPS)
+
+src/from_plaanr.o: src/from_planar.c
+	$(MKDIR_P) $$(dirname $@)
+	$(CC_NO_SUFF) $(CFLAGS) $(OMAX) $(INC) -MD -c $(srcdir)/src/from_planar.c -o $@
+	$(POSTPROCESS_DEPS)
+
+src/to_planar.o: src/to_planar.c
+	$(MKDIR_P) $$(dirname $@)
+	$(CC_NO_SUFF) $(CFLAGS) $(OMAX) $(INC) -MD -c $(srcdir)/src/to_planar.c -o $@
 	$(POSTPROCESS_DEPS)
 
 # Important for this target is inclusion of cuda_wrapper that has patched cuda_runtime.h header (wrapper)

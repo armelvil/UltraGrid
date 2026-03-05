@@ -43,9 +43,8 @@
  *
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
+#include <assert.h>
+#include <stdlib.h>
 #include "debug.h"
 #include "lib_common.h"
 #include "video.h"

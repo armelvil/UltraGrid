@@ -37,18 +37,14 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_win32.h"
-#include "config_unix.h"
-#endif // HAVE_CONFIG_H
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 #include "config_msvc.h"
 
 #include "config_file.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 using namespace std;
 

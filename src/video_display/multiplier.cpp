@@ -36,9 +36,6 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
 #include "debug.h"
 #include "host.h"
 #include "lib_common.h"
@@ -46,6 +43,7 @@
 #include "video_display.h"
 #include "utils/string_view_utils.hpp"
 
+#include <cassert>
 #include <condition_variable>
 #include <vector>
 #include <memory>

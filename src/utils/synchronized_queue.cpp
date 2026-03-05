@@ -35,10 +35,6 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-
 #define NO_EXTERN_MSGQ_MSG
 #include "utils/synchronized_queue.h"
 

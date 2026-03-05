@@ -1,4 +1,4 @@
-#!/bin/sh -eux
+#!/bin/sh -eu
 
 curdir=$(cd "$(dirname "$0")"; pwd)
 readonly curdir
@@ -25,7 +25,7 @@ if is_win || [ "$(id -u)" -eq 0 ]; then
         alias sudo=
 fi
 
-download_install_cineform() {(
+install_cineform() {(
         git clone --depth 1 https://github.com/gopro/cineform-sdk
         cd cineform-sdk
         git apply "$curdir"/patches/\
@@ -35,7 +35,7 @@ cineform-0001-CMakeList.txt-remove-output-lib-name-force-UNIX.patch
         sudo cmake --install build
 )}
 
-download_build_aja() {
+download_build_aja() {(
         aja_url=https://github.com/aja-video/libajantv2.git
         git clone -b release --depth 1 $aja_url
         # TODO TOREMOVE this workarounds when not needed
@@ -43,14 +43,13 @@ download_build_aja() {
                 mv ver-fix-no-NL$$.txt libajantv2/VERSION.txt
         sed -i -e '/MACOS_SDK_VERSION/d' libajantv2/cmake/CMakeOptions.cmake &&
                 SDKROOT=$(xcrun --sdk macosx --show-sdk-path) && export SDKROOT
-        export MACOSX_DEPLOYMENT_TARGET=10.13 # needed for arm64 mac
 
         cmake -DAJANTV2_DISABLE_DEMOS=ON  -DAJANTV2_DISABLE_DRIVER=ON \
                 -DAJANTV2_DISABLE_TOOLS=ON  -DAJANTV2_DISABLE_TESTS=ON \
                 -DAJANTV2_DISABLE_PLUGIN_LOAD=ON -DAJANTV2_BUILD_SHARED=ON \
                 -DCMAKE_BUILD_TYPE=Release -Blibajantv2/build -Slibajantv2
         cmake --build libajantv2/build --config Release -j "$(nproc)"
-}
+)}
 
 install_aja() {(
         if [ "$(uname -s)" = Linux ]; then
@@ -141,13 +140,28 @@ install_zfec() {(
         sudo mv zfec/zfec /usr/local/src
 )}
 
+install_items="aja ews juice live555 pcp zfec"
 if ! is_arm && ! is_win; then
-        download_install_cineform
+        install_items="$install_items cineform"
 fi
-install_aja
-install_ews
-install_juice
-install_live555
-install_pcp
-install_zfec
 
+if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ] || [ "$1" = help ]; }; then
+        printf "Usage:\n"
+        printf "\t%s [<features>] | [ -h | --help | help ]\n" "$0"
+        printf "\nInstall all aditional dependencies (without arguments) or \
+install one explicitly.\n"
+        printf "\nAvailable features: %s%s%s\n" "$(tput bold)" "$install_items" "$(tput sgr0)"
+        exit 0
+fi
+
+if [ $# -eq 0 ]; then
+        # shellcheck disable=SC2086 # intentional
+        set -- $install_items
+fi
+
+set -x
+
+while [ $# -gt 0 ]; do
+        install_"$1"
+        shift
+done

@@ -7,10 +7,19 @@ Patch for Intel/Linux courtesy of Mark Handley & George Pavlou
 Added 2 August 1996, Saleem
 *****************************************************************************/
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
 #include "crypto/crypt_des.h"
+
+#include <string.h>
+#include <time.h>
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <netinet/in.h>
+#else
+#include <winsock2.h>
+int   getpid(void);
+#endif
+
 #include "crypto/random.h"
 
 typedef unsigned int Word;

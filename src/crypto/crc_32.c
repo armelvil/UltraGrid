@@ -1,16 +1,6 @@
 /* Crc - 32 BIT ANSI X3.66 CRC checksum files */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif // HAVE_CONFIG_H
-
 #include <stdio.h>
 #include "crc.h"
-
-#ifdef __TURBOC__
- #pragma warn -cln
-#endif
 
 /**********************************************************************\
 |* Demonstration program to compute the 32-bit CRC used as the frame  *|
@@ -125,40 +115,6 @@ uint32_t updateCRC32(unsigned char ch, uint32_t crc)
       return UPDC32(ch, crc);
 }
 
-bool crc32file(char *name, uint32_t *crc, long *charcnt)
-{
-      register FILE *fin;
-      register uint32_t oldcrc32;
-      register int c;
-
-      oldcrc32 = 0xFFFFFFFF; *charcnt = 0;
-#ifdef MSDOS
-      if ((fin=fopen(name, "rb"))==NULL)
-#else
-      if ((fin=fopen(name, "r"))==NULL)
-#endif
-      {
-            perror(name);
-            return false;
-      }
-      while ((c=getc(fin))!=EOF)
-      {
-            ++*charcnt;
-            oldcrc32 = UPDC32(c, oldcrc32);
-      }
-
-      if (ferror(fin))
-      {
-            perror(name);
-            *charcnt = -1;
-      }
-      fclose(fin);
-
-      *crc = oldcrc32 = ~oldcrc32;
-
-      return true;
-}
-
 uint32_t crc32buf_with_oldcrc(const char *buf, size_t len, uint32_t old_crc)
 {
       register uint32_t oldcrc32;
@@ -177,21 +133,3 @@ uint32_t crc32buf(const char *buf, size_t len)
 {
       return crc32buf_with_oldcrc(buf, len, 0);
 }
-
-#ifdef TEST
-
-main(int argc, char *argv[])
-{
-      uint32_t crc;
-      long charcnt;
-      register errors = 0;
-
-      while(--argc > 0)
-      {
-            errors |= crc32file(*++argv, &crc, &charcnt);
-            printf("%08lX %7ld %s\n", crc, charcnt, *argv);
-      }
-      return(errors != 0);
-}
-
-#endif /* TEST */

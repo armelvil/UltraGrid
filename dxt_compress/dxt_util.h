@@ -29,8 +29,6 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
 #endif
 
 #include "dxt_common.h"
@@ -45,6 +43,7 @@
 #include <GL/gl.h>
 #endif
 
+#include <assert.h>
 #include <string.h>
 
 #ifdef HAVE_GLUT

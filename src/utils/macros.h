@@ -128,9 +128,12 @@
 #endif
 #define IS_FCC(val) (isprint((val) >> 24U & 0xFFU) && isprint((val) >> 16U & 0xFFU) && isprint((val) >> 8U & 0xFFU) && isprint((val) & 0xFFU))
 
-
-/* Use following macro only if there are no dependencies between loop
- * iterations (GCC), perhals the same holds also for clang. */
+/**
+ * Use following macro only if there are no dependencies between loop
+ *
+ * Note: the GCC variant doesn't seem to have any impact of performance (if
+ * written corretly), the clant does but just for few functions where now used.
+ */
 #define __NL__
 #if defined __clang__ // try clang first - on macOS, clang defines both __clang__ and __GNUC__
 #define OPTIMIZED_FOR _Pragma("clang loop vectorize(assume_safety) interleave(enable)") __NL__ for
@@ -138,6 +141,12 @@
 #define OPTIMIZED_FOR _Pragma("GCC ivdep") __NL__ for
 #else
 #define OPTIMIZED_FOR for
+#endif
+
+#if defined __GNUC__ && (__GNUC__ >= 10 || __clang_major__ >= 9)
+#define ALWAYS_INLINE [[gnu::always_inline]]
+#else
+#define ALWAYS_INLINE
 #endif
 
 /// the following limits are used mostly for static array allocations

@@ -3,7 +3,7 @@
  * @author Martin Piatka     <piatka@cesnet.cz>
  */
 /*
- * Copyright (c) 2021 CESNET, z. s. p. o.
+ * Copyright (c) 2021-2026 CESNET, zájmové sdružení právnických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,12 +35,6 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif
-
 #include <juice/juice.h>
 #include <string.h>
 #include <assert.h>
@@ -52,17 +46,6 @@
 #include "lib_common.h"
 
 #include "compat/net.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#include <winsock.h>
-#else
-#include <sys/socket.h>
-#include <poll.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <unistd.h>
-#endif
 
 #define MAX_MSG_LEN 2048
 #define MSG_HEADER_LEN 5

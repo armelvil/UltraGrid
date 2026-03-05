@@ -38,12 +38,6 @@
 #ifndef HD_RUM_RECOMPRESS_H_270dffd1fb25
 #define HD_RUM_RECOMPRESS_H_270dffd1fb25
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif // HAVE_CONFIG_H
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -82,6 +76,6 @@ int recompress_get_num_active_ports(struct state_recompress *s);
 #ifdef __cplusplus
 #include <memory>
 #include <string>
-void recompress_process_async(state_recompress *state, std::shared_ptr<video_frame> frame);
+void recompress_process_async(state_recompress *state, const std::shared_ptr<video_frame>& frame);
 #endif
 #endif // HD_RUM_RECOMPRESS_H_270dffd1fb25

@@ -46,19 +46,15 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif // HAVE_CONFIG_H
-
 #ifndef _WIN32
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 
+#include "compat/net.h"
 #include "ihdtv.h"
 #include "debug.h"
 #include "video.h"

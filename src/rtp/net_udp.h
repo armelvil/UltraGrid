@@ -40,13 +40,7 @@
 #ifndef _NET_UDP
 #define _NET_UDP
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif // HAVE_CONFIG_H
-
-#include "compat/net.h" //for fd_t
+#include "compat/net.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>

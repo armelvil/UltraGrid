@@ -3,7 +3,7 @@
  * @author Martin Pulec     <pulec@cesnet.cz>
  */
 /*
- * Copyright (c) 2015 CESNET, z. s. p. o.
+ * Copyright (c) 2015-2026 CESNET, zájmové sdružení právických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -38,9 +38,9 @@
 #ifndef platform_pipe_h
 #define platform_pipe_h
 
-#include "config_unix.h"
-#include "config_win32.h"
-
+#ifndef _WIN32
+#include <unistd.h> //for read, write
+#endif
 #include "compat/net.h" //for fd_t
 
 #ifdef __cplusplus

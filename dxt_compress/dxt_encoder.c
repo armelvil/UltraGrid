@@ -26,7 +26,6 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#include "config_unix.h"
 #endif
 #include "dxt_encoder.h"
 #include "dxt_util.h"

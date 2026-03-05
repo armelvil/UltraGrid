@@ -3,7 +3,7 @@
  * @author Martin Pulec     <pulec@cesnet.cz>
  */
 /*
- * Copyright (c) 2011-2023 CESNET, z. s. p. o.
+ * Copyright (c) 2011-2026 CESNET, zájmové sdružení právnických osob
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -47,22 +47,28 @@
 /* Use the newer ALSA API */
 #define ALSA_PCM_NEW_HW_PARAMS_API
 
-#include "config_unix.h"
-
-#include "host.h"
+#include <alloca.h>               // for alloca
+#include <alsa/asoundlib.h>       // for snd_strerror, _snd_pcm_access, snd_...
+#include <assert.h>               // for assert
+#include <errno.h>                // for ENODEV, EPIPE
+#include <stdbool.h>              // for bool, false, true
+#include <stdio.h>                // for fprintf, stderr, printf
+#include <stdlib.h>               // for free, malloc, atoi, calloc
+#include <string.h>               // for strlen, strcpy, strncmp, strstr
+#include <sys/time.h>             // for gettimeofday, timeval
 
 #include "alsa_common.h"
 #include "audio/audio_capture.h"
 #include "audio/types.h"
 #include "audio/utils.h"
-
 #include "debug.h"
+#include "host.h"                 // for audio_capture_channels, exit_uv
 #include "lib_common.h"
 #include "tv.h"
-#include <stdlib.h>
-#include <string.h>
+#include "types.h"                // for device_info
+#include "utils/color_out.h"      // for color_printf, TERM_BOLD, TERM_RESET
 
-#include <alsa/asoundlib.h>
+struct module;
 
 #define MOD_NAME "[ALSA cap.] "
 

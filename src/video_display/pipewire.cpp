@@ -1,14 +1,53 @@
+/**
+ * @file   video_display/piewire.cpp
+ * @author Martin Piatka <piatka@cesnet.cz>
+ */
+/*
+ * Copyright (c) 2023-2026 CESNET, zájmové sdružení právnických osob
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, is permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *
+ *      This product includes software developed by the University of Southern
+ *      California Information Sciences Institute. This product also includes
+ *      software developed by CESNET z.s.p.o.
+ *
+ * 4. Neither the name of the University, Institute, CESNET nor the names of
+ *    its contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESSED OR IMPLIED WARRANTIES, INCLUDING,
+ * BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+ * EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-
-#include <assert.h>
-#include <stdlib.h>
+#include <cassert>
+#include <cstdlib>
 #include <unistd.h>
-#include <string.h>
+#include <cstring>
 #include <memory>
 #include <atomic>
+#include <sys/mman.h>
 
 #include "debug.h"
 #include "host.h"
@@ -329,7 +368,7 @@ static bool display_pw_putf(void *state, struct video_frame *frame, long long fl
 {
         auto s = static_cast<display_pw_state *>(state);
 
-        if (flags == PUTF_DISCARD || frame == NULL || frame == s->dummy_frame.get()) {
+        if (flags == PUTF_DISCARD || !frame || frame == s->dummy_frame.get()) {
                 return true;
         }
 
@@ -447,21 +486,21 @@ static bool display_pw_reconfigure(void *state, struct video_desc desc)
 
 static void display_pw_probe(struct device_info **available_cards, int *count, void (**deleter)(void *)) {
         UNUSED(deleter);
-        *available_cards = NULL;
+        *available_cards = nullptr;
         *count = 0;
 }
 
 static const struct video_display_info display_pw_info = {
         display_pw_probe,
         display_pw_init,
-        NULL, // _run
+        nullptr, // _run
         display_pw_done,
         display_pw_getf,
         display_pw_putf,
         display_pw_reconfigure,
         display_pw_get_property,
-        NULL, // _put_audio_frame
-        NULL, // _reconfigure_audio
+        nullptr, // _put_audio_frame
+        nullptr, // _reconfigure_audio
         MOD_NAME,
 };
 

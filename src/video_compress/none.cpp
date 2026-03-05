@@ -35,20 +35,14 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif /* HAVE_CONFIG_H */
-
+#include <cassert>
 #include <stdlib.h>
 
 #include "debug.h"
 #include "host.h"
 #include "lib_common.h"
-#include "video_codec.h"
 #include "video_compress.h"
-#include "video_frame.h"
+#include "types.h"
 
 namespace {
 

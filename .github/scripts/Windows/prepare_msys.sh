@@ -55,6 +55,7 @@ $PACMAN_INSTALL $m-asciidoc \
         $m-fluidsynth\
         $m-glew $m-glfw\
         $m-libnatpmp \
+        $m-svt-jpeg-xs \
         $m-vulkan-headers $m-vulkan-loader \
 
 $PACMAN_INSTALL $m-libsoxr $m-speexdsp

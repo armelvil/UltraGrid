@@ -35,15 +35,11 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
-#endif
+
+#include <stdlib.h>
 
 #include "audio/types.h"
 #include "debug.h"
-#include "host.h"
 #include "utils/audio_buffer.h"
 #include "utils/ring_buffer.h"
 

@@ -64,6 +64,16 @@ install_rav1e() {(
                 /usr/local/lib/pkgconfig/rav1e.pc
 )}
 
+install_svt_jpegxs() {(
+        git clone --depth 1 https://github.com/OpenVisualCloud/SVT-JPEG-XS
+        # when built in U22.04, the stack is set as executable for some reason,
+        # not in Arch, eg.
+        export LDFLAGS="-Wl,-z,noexecstack"
+        cmake -B SVT-JPEG-XS/build SVT-JPEG-XS
+        cmake --build SVT-JPEG-XS/build --parallel "$(nproc)"
+        sudo cmake --install SVT-JPEG-XS/build
+)}
+
 # FFmpeg master needs at least v1.3.277 as for 6th Mar '25
 install_vulkan() {(
         sudo apt build-dep libvulkan1
@@ -87,7 +97,7 @@ if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ] || [ "$1" = help ]; }; t
 fi
 
 if [ $# -eq 0 ] || [ $show_help ]; then
-        set -- gpujpeg ndi pipewire rav1e vulkan ximea
+        set -- gpujpeg ndi pipewire rav1e svt_jpegxs vulkan ximea
 fi
 
 if [ $show_help ]; then

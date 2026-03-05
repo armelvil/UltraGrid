@@ -44,11 +44,11 @@
  * * do we want v4lconvert? (perhaps not)
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif // defined HAVE_CONFIG_H
-#include "config_unix.h"
-#include "config_win32.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define BUFFERS 2
 #define MOD_NAME "[v4l2 disp.] "

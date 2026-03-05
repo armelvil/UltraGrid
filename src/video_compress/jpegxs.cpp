@@ -35,26 +35,30 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <memory>
-#include <iostream>
-#include <string>
+#include <cassert>                                 // for assert
+#include <cinttypes>                               // for PRIu32
+#include <climits>                                 // for LLONG_MIN
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
-#include <vector>
+#include <svt-jpegxs/SvtJpegxs.h>                  // for SvtJxsErrorType
 #include <svt-jpegxs/SvtJpegxsEnc.h>
 #include <svt-jpegxs/SvtJpegxsImageBufferTools.h>
 
 #include "debug.h"
 #include "lib_common.h"
+#include "types.h"                                 // for video_desc, tile
+#include "utils/misc.h"                            // for get_cpu_core_count
 #include "video.h"
 #include "video_compress.h"
 #include "utils/video_frame_pool.h"
 #include "utils/synchronized_queue.h"
 #include "jpegxs/jpegxs_conv.h"
+#include "video_frame.h"                           // for video_desc_from_frame
 
-#define DEFAULT_POOL_SIZE 5
+#define DEFAULT_POOL_SIZE 2
 #define MOD_NAME "[JPEG XS enc.] "
 
 using std::shared_ptr;
@@ -62,13 +66,13 @@ using std::condition_variable;
 using std::mutex;
 using std::thread;
 using std::unique_lock;
-using std::unique_ptr;
-using std::vector;
-using std::queue;
 using std::atomic;
 
 namespace {
 struct state_video_compress_jpegxs;
+
+int jxs_poison_pill_obj = 0;
+#define JXS_POISON_PILL ((void *) &jxs_poison_pill_obj)
 
 struct state_video_compress_jpegxs {
         state_video_compress_jpegxs(struct module *parent, const char *opts);
@@ -76,9 +80,6 @@ struct state_video_compress_jpegxs {
         ~state_video_compress_jpegxs() {
                 if (worker_send.joinable()) {
                         worker_send.join();
-                }
-                if (worker_get.joinable()) {
-                        worker_get.join();
                 }
                 cleanup();
         }
@@ -88,9 +89,11 @@ struct state_video_compress_jpegxs {
         svt_jpeg_xs_frame_pool_t *frame_pool{};
         int pool_size = DEFAULT_POOL_SIZE;
 
+        long long req_bitrate = -1; ///< if set to != -1, compute bpp from it
+
         bool configured = 0;
         bool reconfiguring = 0;
-        bool stop = 0;
+        bool stop = false;
 
         video_desc saved_desc;
 
@@ -101,11 +104,9 @@ struct state_video_compress_jpegxs {
         void cleanup();
         bool parse_fmt(char *fmt);
 
-        synchronized_queue<shared_ptr<struct video_frame>, DEFAULT_POOL_SIZE> in_queue;
-        synchronized_queue<shared_ptr<struct video_frame>, -1> out_queue;
+        synchronized_queue<shared_ptr<struct video_frame>, 1> in_queue;
 
         thread worker_send;
-        thread worker_get;
 
         mutex mtx;
         condition_variable cv_configured;
@@ -118,7 +119,6 @@ struct state_video_compress_jpegxs {
 
 static bool configure_with(struct state_video_compress_jpegxs *s, struct video_desc desc);
 static void jpegxs_worker_send(state_video_compress_jpegxs *s);
-static void jpegxs_worker_get(state_video_compress_jpegxs *s);
 
 state_video_compress_jpegxs::state_video_compress_jpegxs(struct module *parent, const char *opts) {
         (void) parent;
@@ -129,8 +129,10 @@ state_video_compress_jpegxs::state_video_compress_jpegxs(struct module *parent, 
                 throw 1;
         }
 
-        encoder.bpp_numerator = 3;
+        encoder.bpp_numerator = 7;
+        encoder.bpp_denominator = 10;
         encoder.verbose = VERBOSE_NONE;
+        encoder.threads_num = get_cpu_core_count();
 
         if(opts && opts[0] != '\0') {
                 char *fmt = strdup(opts);
@@ -142,7 +144,6 @@ state_video_compress_jpegxs::state_video_compress_jpegxs(struct module *parent, 
         }
 
         worker_send = thread(jpegxs_worker_send, this);
-        worker_get = thread(jpegxs_worker_get, this); 
 }
 
 static void jpegxs_worker_send(state_video_compress_jpegxs *s) {
@@ -150,16 +151,18 @@ while (true) {
         auto frame = s->in_queue.pop();
 
         if (!frame) {
-                s->out_queue.push(frame);
-        {
-                unique_lock<mutex> lock(s->mtx);
-                s->stop = true;
-                svt_jpeg_xs_frame_t enc_input;
-                svt_jpeg_xs_frame_pool_get(s->frame_pool, &enc_input, /*blocking*/ 1);
-                svt_jpeg_xs_encoder_send_picture(&s->encoder, &enc_input, /*blocking*/ 1);
-                s->frames_sent++;
-        }
-                s->cv_configured.notify_one();
+                if (s->configured) {
+                        svt_jpeg_xs_frame_t enc_input;
+                        svt_jpeg_xs_frame_pool_get(s->frame_pool, &enc_input, /*blocking*/ 1);
+                        enc_input.user_prv_ctx_ptr = JXS_POISON_PILL;
+                        svt_jpeg_xs_encoder_send_picture(&s->encoder, &enc_input, /*blocking*/ 1);
+                        s->frames_sent++;
+                } else {
+                        unique_lock<mutex> lock(s->mtx);
+                        s->stop = true;
+                        lock.unlock();
+                        s->cv_configured.notify_one();
+                }
                 break;
         }
 
@@ -198,6 +201,9 @@ while (true) {
                 continue;
         }
 
+        enc_input.user_prv_ctx_ptr = malloc(VF_METADATA_SIZE);
+        vf_store_metadata(frame.get(), enc_input.user_prv_ctx_ptr);
+        
         struct tile *in_tile = vf_get_tile(frame.get(), 0);
         s->convert_to_planar((const uint8_t *) in_tile->data, in_tile->width, in_tile->height, &enc_input.image);
 
@@ -208,58 +214,6 @@ while (true) {
         }
 
         s->frames_sent++;
-}
-}
-
-static void jpegxs_worker_get(state_video_compress_jpegxs *s) {
-{
-        unique_lock<mutex> lock(s->mtx);
-        s->cv_configured.wait(lock, [&]{
-                return s->configured || s->stop;
-        });
-
-        if (!s->configured && s->stop) {
-                return;
-        }
-}
-while (true) {
-{
-        unique_lock<mutex> lock(s->mtx);
-        if (s->frames_received == s->frames_sent) {
-                if (s->stop) {
-                        return;
-                }
-                if (s->reconfiguring) {
-                        s->cv_drained.notify_one();
-                        s->cv_reconfiguring.wait(lock, [&]{
-                                return !s->reconfiguring;
-                        });
-                        continue;
-                }
-        }
-}
-        svt_jpeg_xs_frame_t enc_output;
-        SvtJxsErrorType_t err = svt_jpeg_xs_encoder_get_packet(&s->encoder, &enc_output, /*blocking*/ 1);
-        if (err != SvtJxsErrorNone) {
-                log_msg(LOG_LEVEL_ERROR, MOD_NAME "Failed to get encoded packet, error code: %x\n", err);
-                continue;
-        }
-        s->frames_received++;
-
-        shared_ptr<video_frame> out_frame = s->pool.get_frame();
-        
-        struct tile *out_tile = vf_get_tile(out_frame.get(), 0);
-        size_t enc_size = enc_output.bitstream.used_size;
-        if (enc_size > out_tile->data_len) {
-                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Encoded frame too big (%zu > %u)\n", enc_size, out_tile->data_len);
-                continue;
-        }
-        
-        out_tile->data_len = enc_size;
-        memcpy(out_tile->data, enc_output.bitstream.buffer, enc_size);
-
-        s->out_queue.push(out_frame);
-        svt_jpeg_xs_frame_pool_release(s->frame_pool, &enc_output);
 }
 }
 
@@ -274,6 +228,41 @@ ColourFormat subsampling_to_jpegxs(int ug_subs) {
         default:
                 abort();
         }
+}
+
+static void
+print_bitrate(long long bitrate, const svt_jpeg_xs_encoder_api_t *encoder)
+{
+        char buf[FORMAT_NUM_MAX_SZ];
+        MSG(INFO,
+            "using bitrate %s bps (%" PRIu32 "/%" PRIu32 " bits per pixel)\n",
+            format_number_with_delim(bitrate, buf, sizeof buf),
+            encoder->bpp_numerator, encoder->bpp_denominator);
+}
+
+static void
+set_bitrate(svt_jpeg_xs_encoder_api_t *encoder, long long req_bitrate,
+            const struct video_desc *desc)
+{
+        if (req_bitrate == -1) { // bpp set, just print bitrate
+                auto bitrate = (long long) (encoder->bpp_numerator * desc->fps *
+                                            desc->width * desc->height /
+                                            encoder->bpp_denominator);
+                print_bitrate(bitrate, encoder);
+                return;
+        }
+        long long numerator   = req_bitrate;
+        long long denominator = desc->width * desc->height * desc->fps;
+        // reduce numbers to fit uint32_t if num or den is larger
+        while (numerator > UINT32_MAX || denominator > UINT32_MAX) {
+                numerator /= 1024;
+                denominator /= 1024;
+        }
+        assert(numerator > 0);
+        assert(denominator > 0);
+        encoder->bpp_numerator   = numerator;
+        encoder->bpp_denominator = denominator;
+        print_bitrate(req_bitrate, encoder);
 }
 
 static bool configure_with(struct state_video_compress_jpegxs *s, struct video_desc desc)
@@ -305,6 +294,8 @@ static bool configure_with(struct state_video_compress_jpegxs *s, struct video_d
                 return false;
         }
 
+        set_bitrate(&s->encoder, s->req_bitrate, &desc);
+
         err = svt_jpeg_xs_encoder_init(SVT_JPEGXS_API_VER_MAJOR, SVT_JPEGXS_API_VER_MINOR, &s->encoder);
         if (err != SvtJxsErrorNone) {
                 log_msg(LOG_LEVEL_ERROR, MOD_NAME "Failed to initialize JPEG XS encoder: %x\n", err);
@@ -334,80 +325,106 @@ void state_video_compress_jpegxs::cleanup() {
         }
 }
 
+static bool
+parse_bpp(const char *val, svt_jpeg_xs_encoder_api_t *encoder)
+{
+        double num = 0;
+        int den = 1;
+        if (sscanf(val, "%lf/%d", &num, &den) < 1 || num <= 0 || den <= 0) {
+                MSG(ERROR,
+                    "Invalid bpp value '%s' (must be a positive number or a "
+                    "fraction, e.g., 2, 0.5 or 3/4).\n",
+                    val);
+                return false;
+        }
+        if (num != (int) num) { // decimal number in numerator
+                num *= 1000;
+                den *= 1000;
+        }
+        encoder->bpp_numerator   = (int) num;
+        encoder->bpp_denominator = den;
+        return true;
+}
+
 bool state_video_compress_jpegxs::parse_fmt(char *fmt) {
         char *tok, *save_ptr = NULL;
 
         while ((tok = strtok_r(fmt, ":", &save_ptr)) != nullptr) {
-                if (IS_KEY_PREFIX(tok, "bpp")) {
-                        const char *bpp = strchr(tok, '=') + 1;
-                        int num = 0, den = 1;
-                        if (strspn(bpp, "0123456789/") == strlen(bpp) && (sscanf(bpp, "%d/%d", &num, &den) == 2 || sscanf(bpp, "%d", &num)) && num > 0 && den > 0) {
-                                encoder.bpp_numerator = num;
-                                encoder.bpp_denominator = den;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid bits per pixel value '%s' (must be a positive integer or fraction, e.g., 2 or 3/4). Using default 3.\n", tok);
+                const char *val = strchr(tok, '=');
+                int num = -1;
+                if (val != nullptr) {
+                        val += 1;
+                        num = atoi(val);
+                }
+                if (IS_KEY_PREFIX(tok, "bitrate")) {
+                        req_bitrate = unit_evaluate(val, nullptr);
+                        if (req_bitrate == LLONG_MIN) {
+                                MSG(ERROR, "Invalid value for bitrate: %s\n", val);
+                                 return false;
+                        }
+                } else if (IS_KEY_PREFIX(tok, "bpp")) {
+                        if (!parse_bpp(val, &encoder)) {
+                                return false;
                         }
                 } else if (IS_KEY_PREFIX(tok, "pool_size")) {
-                        const int ps = atoi(strchr(tok, '=') + 1);
-                        if (0 <= ps) {
-                                pool_size = ps;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid pool size value '%s' (must be a positive integer). Using default 5.\n", tok);
+                        if (num <= 0) {
+                                MSG(ERROR, "Invalid pool size value '%s' (must be a positive integer).\n", val);
+                                return false;
                         }
+                        pool_size = num;
                 } else if (IS_KEY_PREFIX(tok, "decomp_v")) {
-                        const int v = atoi(strchr(tok, '=') + 1);
-                        if (0 <= v && v <= 2) {
-                                encoder.ndecomp_v = v;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid vertical decomposition value '%s' (must be 0, 1 or 2). Using default 2.\n", tok);
+                        if (num <= 0 ||num > 2) {
+                                MSG(ERROR, "Invalid decomp_v value '%s' (must be 0, 1 or 2).\n", val);
+                                return false;
                         }
+                        encoder.ndecomp_v = num;
                 } else if (IS_KEY_PREFIX(tok, "decomp_h")) {
-                        const int h = atoi(strchr(tok, '=') + 1);
-                        if (1 <= h && h <= 5) {
-                                encoder.ndecomp_h = h;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid horizontal decomposition value '%s' (must be 1, 2, 3, 4 or 5). Using default 5.\n", tok);
-                        } 
+                        if (num < 1 || num > 5) {
+                                MSG(ERROR, "Invalid decomp_h value '%s' (must be 1, 2, 3, 4 or 5).\n", val);
+                                return false;
+                        }
+                        encoder.ndecomp_h = num;
                 } else if (IS_KEY_PREFIX(tok, "quantization")) {
-                        const int q = atoi(strchr(tok, '=') + 1);
-                        if (q == 0 || q == 1) {
-                                encoder.quantization = q;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid quantization method '%s' (must be 0 - deadzone, or 1 - uniform). Using default 0.\n", tok);
+                        if (num != 0 && num != 1) {
+                                MSG(ERROR, "Invalid quantization method '%s' (must be 0 - deadzone, or 1 - uniform).\n", val);
+                                return false;
                         }
+                        encoder.quantization = num;
                 } else if (IS_KEY_PREFIX(tok, "slice_height")) {
-                        const int sh = atoi(strchr(tok, '=') + 1);
-                        if (sh > 0 && (sh & ( (1 << encoder.ndecomp_v) - 1 )) == 0) {
-                                encoder.slice_height = sh;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid slice height value '%s' (must be a multiple of 2^decomp_v). Using default 16.\n", tok);
+                        if (num <= 0) {
+                                MSG(ERROR, "Invalid slice_height value '%s' (must be positive).\n", val);
+                                return false;
                         }
+                        encoder.slice_height = num;
                 } else if (IS_KEY_PREFIX(tok, "rc")) {
-                        const int rc = atoi(strchr(tok, '=') + 1);
-                        if (0 <= rc && rc <= 3) {
-                                encoder.rate_control_mode = rc;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid rate control mode '%s' (must be 0 - CBR budget per precinct, 1 - CBR budget per precinct with padding movement, 2 - CBR budget per slice, or 3 - CBR budget per slice with max rate size). Using default 0.\n", tok);
+                        if (num < 0 || num > 3) {
+                                MSG(ERROR, "Invalid rc mode '%s' (must be 0 - CBR budget per precinct, 1 - CBR budget per precinct with padding movement, 2 - CBR budget per slice, or 3 - CBR budget per slice with max rate size).\n", val);
+                                return false;
                         }
+                        encoder.rate_control_mode = num;
                 } else if (IS_KEY_PREFIX(tok, "threads")) {
-                        const int threads = atoi(strchr(tok, '=') + 1);
-                        int max_threads = thread::hardware_concurrency();
-                        if (0 <= threads && threads <= max_threads) {
-                                encoder.threads_num = threads;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid number of threads '%s' (must be between 0 and %d). Using default 0, which means lowest possible number of threads is created.\n", tok, max_threads);
+                        const int threads = atoi(val);
+                        if (threads < 0) {
+                                MSG(ERROR, "Invalid number of threads '%s' (must be a positive value or 0 which means lowest possible number of threads is created).\n", tok);
+                                return false;
                         }
+                        encoder.threads_num = threads;
                 } else if (IS_KEY_PREFIX(tok, "verbose")) {
-                        const int vb = atoi(strchr(tok, '=') + 1);
-                        if (0 <= vb && vb <= 6) {
-                                encoder.verbose = vb;
-                        } else {
-                                log_msg(LOG_LEVEL_WARNING, MOD_NAME "Invalid verbose messages mode '%s' (must be between 0 and 6). Using default 0 (no messages).\n", tok);
+                        if (num < VERBOSE_NONE || num > VERBOSE_INFO_FULL) {
+                                MSG(ERROR, "Invalid verbose messages mode '%s' (must be between %d and %d).\n", tok, VERBOSE_NONE, VERBOSE_INFO_FULL);
+                                return false;
                         }
+                        encoder.verbose = num;
                 } else {
-                        log_msg(LOG_LEVEL_WARNING, MOD_NAME "WARNING: Trailing configuration parameter: %s\n", tok);
+                        MSG(ERROR, "Unknown configuration parameter or a missing value: %s\n", tok);
+                        return false;
                 }
                 fmt = nullptr;
+        }
+
+        if ((encoder.slice_height & ( (1 << encoder.ndecomp_v) - 1 )) != 0) {
+                MSG(ERROR, "Invalid slice_height value '%" PRIu32 "' (must be a multiple of 2^decomp_v).\n", encoder.slice_height);
+                return false;
         }
 
         return true;
@@ -422,9 +439,12 @@ static const struct {
         bool is_boolean;
         const char *placeholder;
 } usage_opts[] = {
+        {"Bit rate", "bitrate", "bitrate", "\t\tbitrate to be used "
+                "(eg. 50.5M)\n", ":bitrate=", false, "50.5M"
+        },
         {"Bits per pixel", "bpp", "bpp",
-                "\t\tTarget bits-per-pixel ratio for the encoder. May be given as an\n"
-                "\t\tinteger (e.g., 2) or as a fraction (e.g., 3/4). Controls the\n"
+                "\t\tTarget bits-per-pixel ratio for the encoder. May be given as a\n"
+                "\t\tnumber (eg. 2 or 0.5) or as a fraction (e.g., 3/4). Controls the\n"
                 "\t\toutput bitrate indirectly. Must be a positive value.\n"
                 "\t\tThe default is 3.\n",
                 ":bpp=", false, "3"
@@ -458,16 +478,9 @@ static const struct {
                 ":rc=", false, "0"
         },
         {"Threads scaling parameter", "threads", "threads",
-                "\t\tNumber of encoder threads. Must be between 0 and the number of\n"
-                "\t\tavailable CPU cores. Value 0 means the lowest possible number\n"
-                "\t\tof threads is created by the encoder. The default is 0.\n",
+                "\t\tNumber of encoder threads. Must be a positive number. Value 0 means\n"
+                "\t\tthe lowest possible number of threads. Default: nr of logical cores\n",
                 ":threads=", false, "0"
-        },
-        {"JPEG XS pool size", "pool_size", "pool_size",
-                "\t\tThe size of the SVT-JPEG-XS frame pool. Increasing the pool size\n"
-                "\t\tenables more frames to be sent to the encoder's internal queue.\n"
-                "\t\tThe default is 5.\n",
-                ":pool_size=", false, "5"
         },
         {"Encoder verbose", "verbose", "verbose",
                 "\t\tSets the verbosity level of the SVT-JPEG-XS encoder.\n"
@@ -484,9 +497,9 @@ static void *jpegxs_compress_init(struct module *parent, const char *opts) {
         if (opts && strcmp(opts, "help") == 0) {
                 color_printf(TBOLD("JPEG XS") " compression usage:\n");
                 color_printf("\t" TBOLD(
-                        TRED("-c jpegxs") "[:bpp=<ratio>][:decomp_v=<0-2>][:decomp_h=<1-5>]"
+                        TRED("-c jpegxs") "[:bitrate=<br>|:bpp=<ratio>][:decomp_v=<0-2>][:decomp_h=<1-5>]"
                                           "[:quantization=<0-1>][:slice_height=<n>][:rc=<mode>]"
-                                          "[:threads=<num_threads>][:pool_size=<n>][:verbose=<n>]") "\n");
+                                          "[:threads=<num_threads>][:verbose=<n>]") "\n");
                 color_printf("\t" TBOLD(TRED("-c jpegxs") ":help") "\n");
 
                 color_printf("\nwhere:\n");
@@ -507,17 +520,63 @@ static void jpegxs_compress_push(void *state, shared_ptr<video_frame> frame) {
         static_cast<struct state_video_compress_jpegxs *>(state)->in_queue.push(std::move(frame));
 }
 
-static shared_ptr<video_frame> jpegxs_compress_pop(void *state) {
-        return static_cast<struct state_video_compress_jpegxs *>(state)->out_queue.pop();
+static shared_ptr<video_frame>
+jpegxs_compress_pop(void *state)
+{
+        auto *s = static_cast<struct state_video_compress_jpegxs *>(state);
+        {
+                unique_lock<mutex> lock(s->mtx);
+                s->cv_configured.wait(lock,
+                                      [&] { return s->configured || s->stop; });
+
+                if (s->stop) {
+                        return {};
+                }
+                if (s->reconfiguring && s->frames_received == s->frames_sent) {
+                        s->cv_drained.notify_one();
+                        s->cv_reconfiguring.wait(
+                            lock, [&] { return !s->reconfiguring; });
+                }
+        }
+        svt_jpeg_xs_frame_t enc_output;
+        SvtJxsErrorType_t   err = svt_jpeg_xs_encoder_get_packet(
+            &s->encoder, &enc_output, /*blocking*/ 1);
+        if (err != SvtJxsErrorNone) {
+                MSG(ERROR, "Failed to get encoded packet, error code: %x\n",
+                    err);
+                free(enc_output.user_prv_ctx_ptr);
+                svt_jpeg_xs_frame_pool_release(s->frame_pool, &enc_output);
+                return vcomp_pop_retry;
+        }
+        if (enc_output.user_prv_ctx_ptr == JXS_POISON_PILL) {
+                svt_jpeg_xs_frame_pool_release(s->frame_pool, &enc_output);
+                return {};
+        }
+        s->frames_received++;
+
+        shared_ptr<video_frame> out_frame = s->pool.get_frame();
+
+        vf_restore_metadata(out_frame.get(), enc_output.user_prv_ctx_ptr);
+        free(enc_output.user_prv_ctx_ptr);
+
+        struct tile *out_tile = vf_get_tile(out_frame.get(), 0);
+        size_t       enc_size = enc_output.bitstream.used_size;
+        if (enc_size > out_tile->data_len) {
+                MSG(WARNING, "Encoded frame too big (%zu > %u)\n", enc_size,
+                    out_tile->data_len);
+                svt_jpeg_xs_frame_pool_release(s->frame_pool, &enc_output);
+                return vcomp_pop_retry;
+        }
+
+        out_tile->data_len = enc_size;
+        memcpy(out_tile->data, enc_output.bitstream.buffer, enc_size);
+
+        svt_jpeg_xs_frame_pool_release(s->frame_pool, &enc_output);
+        return out_frame;
 }
 
 static void jpegxs_compress_done(void *state) {
         auto s = static_cast<state_video_compress_jpegxs *>(state);
-        {
-                std::scoped_lock l(s->mtx);
-                //s->stop = true;
-                //s->out_queue.pop(true);
-        }
         delete s;
 }
 
@@ -545,10 +604,10 @@ const struct video_compress_info jpegxs_info = {
         jpegxs_compress_done,
         NULL,
         NULL,
+        NULL,
+        NULL,
         jpegxs_compress_push,
         jpegxs_compress_pop,
-        NULL,
-        NULL,
         get_jpegxs_module_info,
 };
 

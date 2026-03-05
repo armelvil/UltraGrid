@@ -35,15 +35,10 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "config.h"
-#include "config_unix.h"
-#include "config_win32.h"
 #include "debug.h"
 #include "lib_common.h"
 
 #include <condition_variable>
-#include <list>
-#include <map>
 #include <vector>
 #include <memory>
 #include <mutex>

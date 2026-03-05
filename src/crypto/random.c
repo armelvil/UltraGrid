@@ -47,9 +47,15 @@
  */
 
 #include "config.h"
-#include "config_win32.h"
-#include "config_unix.h"
 #include "crypto/random.h"
+
+#ifdef HAVE_DEV_URANDOM
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#endif
+
 
 static uint32_t randseed = 1;
 

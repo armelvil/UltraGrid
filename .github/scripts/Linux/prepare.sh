@@ -35,6 +35,7 @@ sudo apt install libasound-dev libcaca-dev libjack-jackd2-dev libnatpmp-dev libv
 sudo apt install libopencv-core-dev libopencv-imgproc-dev
 sudo apt install libcurl4-openssl-dev # for RTSP client (vidcap)
 sudo apt install i965-va-driver-shaders libva-dev # instead of i965-va-driver
+sudo apt install nasm # for SVT-JPEG-XS
 
 sudo apt install qt6-base-dev qt6-wayland
 . /etc/os-release # source ID and VERSION_ID

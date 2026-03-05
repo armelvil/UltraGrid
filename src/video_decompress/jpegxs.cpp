@@ -36,14 +36,18 @@
  */
 
 #include <assert.h>
+#include <svt-jpegxs/SvtJpegxs.h>
 #include <svt-jpegxs/SvtJpegxsDec.h>
 #include <svt-jpegxs/SvtJpegxsImageBufferTools.h>
 
 #include "debug.h"
 #include "lib_common.h"
+#include "from_planar.h"                           // for rgbp12le_to_r12l
+#include "types.h"
+#include "utils/debug.h"                           // for DEBUG_TIMER_*
+#include "utils/misc.h"                            // for get_cpu_core_count
 #include "video.h"
 #include "video_decompress.h"
-#include "jpegxs/jpegxs_conv.h"
 
 #define MOD_NAME "[JPEG XS dec.] "
 
@@ -62,13 +66,87 @@ struct state_decompress_jpegxs {
         
         bool configured = 0;
 
-        void (*convert_from_planar)(const svt_jpeg_xs_image_buffer_t *src, int width, int height, uint8_t *dst) = nullptr;
+        const struct jpegxs_to_uv_conversion *convert_from_planar;
 
         struct video_desc desc{};
         int rshift, gshift, bshift;
         int pitch;
         codec_t out_codec;
 };
+
+struct jpegxs_to_uv_conversion {
+        ColourFormat_t src;
+        codec_t dst;
+        decode_planar_func_t *convert;
+};
+
+static const struct jpegxs_to_uv_conversion jpegxs_to_uv_conversions[] = {
+        { COLOUR_FORMAT_PLANAR_YUV422,        UYVY, yuv422pXX_to_uyvy  },
+        { COLOUR_FORMAT_PLANAR_YUV422,        YUYV, yuv422p_to_yuyv  },
+        { COLOUR_FORMAT_PLANAR_YUV420,        I420, yuv420_to_i420   },
+        { COLOUR_FORMAT_PLANAR_YUV420,        UYVY, yuv420p_to_uyvy  },
+        { COLOUR_FORMAT_PLANAR_YUV444_OR_RGB, RGB,  rgbpXX_to_rgb    },
+        { COLOUR_FORMAT_PLANAR_YUV422,        v210, yuv422p10le_to_v210},
+        { COLOUR_FORMAT_PLANAR_YUV444_OR_RGB, R10k, rgbpXXle_to_r10k },
+        { COLOUR_FORMAT_PLANAR_YUV444_OR_RGB, R12L, rgbpXXle_to_r12l },
+        { COLOUR_FORMAT_PLANAR_YUV444_OR_RGB, RG48, rgbpXXle_to_rg48 },
+};
+
+static enum subsampling get_jxs_subsampling_to_ug(ColourFormat_t jxs_ss);
+
+static const struct jpegxs_to_uv_conversion *
+get_jpegxs_to_uv_conversion(codec_t codec, enum subsampling ug_ss)
+{
+        bool found_any = true;
+        const struct jpegxs_to_uv_conversion *conv = jpegxs_to_uv_conversions;
+        for (unsigned i = 0; i < std::size(jpegxs_to_uv_conversions); ++i) {
+                if (conv[i].dst != codec) {
+                        continue;
+                }
+                found_any = true;
+                if (ug_ss == get_jxs_subsampling_to_ug(conv[i].src)) {
+                        return &conv[i];
+                }
+        }
+
+        if (found_any) {
+                MSG(WARNING,
+                    "Some conversion found but incompatible subsampling (converting  "
+                    "%d to pixfmt %s)\n",
+                    ug_ss, get_codec_name(codec));
+        }
+        return nullptr;
+}
+
+static void
+jpegxs_to_uv_convert(struct state_decompress_jpegxs *s,
+                     const svt_jpeg_xs_image_buffer_t *src, int width,
+                     int height, uint8_t *dst)
+{
+        const struct jpegxs_to_uv_conversion *conv = s->convert_from_planar;
+        const int in_bpp = s->image_config.bit_depth > 8 ? 2 : 1;
+        struct from_planar_data d = {};
+        d.width          = width;
+        d.height         = height;
+        d.out_data       = dst;
+        d.out_pitch      = s->pitch;
+        d.in_data[0]     = (const unsigned char *) src->data_yuv[0];
+        d.in_data[1]     = (const unsigned char *) src->data_yuv[1];
+        d.in_data[2]     = (const unsigned char *) src->data_yuv[2];
+        d.in_linesize[0] = src->stride[0] * in_bpp;
+        d.in_linesize[1] = src->stride[1] * in_bpp;
+        d.in_linesize[2] = src->stride[2] * in_bpp;
+        d.in_depth       = s->image_config.bit_depth;
+        d.log2_chroma_h = conv->src == COLOUR_FORMAT_PLANAR_YUV420 ? 1 : 0;
+        d.rgb_shift[0] = s->rshift;
+        d.rgb_shift[1] = s->gshift;
+        d.rgb_shift[2] = s->bshift;
+        int num_threads = FROM_PLANAR_THREADS_AUTO;
+        if (conv->convert == yuv420_to_i420) {
+                num_threads = 1; // no proper support for parallel decode
+        }
+        decode_planar_parallel(conv->convert, d, num_threads);
+}
 
 static void *jpegxs_decompress_init(void) {
         struct state_decompress_jpegxs *s = new state_decompress_jpegxs();
@@ -78,10 +156,12 @@ static void *jpegxs_decompress_init(void) {
 
 static bool configure_with(struct state_decompress_jpegxs *s, unsigned char *bitstream_buffer, size_t codestream_size)
 {
+        assert(s->out_codec != VC_NONE);
+
         s->decoder.verbose = VERBOSE_NONE;
-        s->decoder.threads_num = 10;
+        s->decoder.threads_num = get_cpu_core_count();
         s->decoder.use_cpu_flags = CPU_FLAGS_ALL;
-        s->decoder.proxy_mode = proxy_mode_full;
+        // s->decoder.proxy_mode = proxy_mode_full;
 
         SvtJxsErrorType_t err = svt_jpeg_xs_decoder_init(SVT_JPEGXS_API_VER_MAJOR, SVT_JPEGXS_API_VER_MINOR, &s->decoder, bitstream_buffer, codestream_size, &s->image_config);
         if (err != SvtJxsErrorNone) {
@@ -94,6 +174,11 @@ static bool configure_with(struct state_decompress_jpegxs *s, unsigned char *bit
                 log_msg(LOG_LEVEL_ERROR, MOD_NAME "Failed to allocate JPEG XS frame pool\n");
                 return false;
         }
+        s->convert_from_planar = get_jpegxs_to_uv_conversion(s->out_codec, get_jxs_subsampling_to_ug(s->image_config.format));
+        if (!s->convert_from_planar) {
+                log_msg(LOG_LEVEL_ERROR, MOD_NAME "Unsupported codec: %s\n", get_codec_name(s->out_codec));
+                return false;
+        }
 
         s->configured = true;
         return true;
@@ -103,8 +188,6 @@ static int jpegxs_decompress_reconfigure(void *state, struct video_desc desc,
         int rshift, int gshift, int bshift, int pitch, codec_t out_codec)
 {
         struct state_decompress_jpegxs *s = (struct state_decompress_jpegxs *) state;
-
-        assert(get_jpegxs_to_uv_conversion(out_codec) || out_codec == VIDEO_CODEC_NONE);
 
         if (s->out_codec == out_codec &&
                 s->pitch == pitch &&
@@ -129,15 +212,6 @@ static int jpegxs_decompress_reconfigure(void *state, struct video_desc desc,
                     "you're seeing this message and decode correctly.");
         }
 
-        if (s->out_codec != VIDEO_CODEC_NONE) {
-                const struct jpegxs_to_uv_conversion *conv = get_jpegxs_to_uv_conversion(s->out_codec);
-                if (!conv || !conv->convert) {
-                        log_msg(LOG_LEVEL_ERROR, MOD_NAME "Unsupported codec: %s\n", get_codec_name(s->out_codec));
-                        return false;
-                }
-                s->convert_from_planar = conv->convert;
-        }
-
         if (s->configured) {
                 svt_jpeg_xs_decoder_close(&s->decoder);
                 s->configured = false;
@@ -152,22 +226,22 @@ static decompress_status jpegxs_probe_internal_codec(struct state_decompress_jpe
         SvtJxsErrorType_t err = svt_jpeg_xs_decoder_get_single_frame_size(buffer, buffer_size, &s->image_config, &size, 0);
         if (err != SvtJxsErrorNone) {
                 log_msg(LOG_LEVEL_ERROR, MOD_NAME "Failed to get frame size from bitstream, error code: %x\n", err);
-                abort();
+                return DECODER_NO_FRAME;
         }
         assert(buffer_size == size);
 
         internal_prop->depth = s->image_config.bit_depth;
         switch (s->image_config.format) {
         case COLOUR_FORMAT_PLANAR_YUV420:
-                internal_prop->subsampling = 4200;
+                internal_prop->subsampling = SUBS_420;
                 internal_prop->rgb = false;
                 break;
         case COLOUR_FORMAT_PLANAR_YUV422:
-                internal_prop->subsampling = 4220;
+                internal_prop->subsampling = SUBS_422;
                 internal_prop->rgb = false;
                 break;
         case COLOUR_FORMAT_PLANAR_YUV444_OR_RGB:
-                internal_prop->subsampling = 4440;
+                internal_prop->subsampling = SUBS_444;
                 internal_prop->rgb = true;
                 break;
         default:
@@ -208,6 +282,7 @@ static decompress_status jpegxs_decompress(void *state, unsigned char *dst, unsi
         }
         dec_input.bitstream = bitstream;
 
+        DEBUG_TIMER_START(jpegxs_decompress);
         err = svt_jpeg_xs_decoder_send_frame(&s->decoder, &dec_input, 1 /*blocking*/);
         if (err != SvtJxsErrorNone) {
                 log_msg(LOG_LEVEL_ERROR, MOD_NAME "Failed to send frame to decoder, error code: %x\n", err);
@@ -217,11 +292,15 @@ static decompress_status jpegxs_decompress(void *state, unsigned char *dst, unsi
         svt_jpeg_xs_frame_t dec_output;
         err = svt_jpeg_xs_decoder_get_frame(&s->decoder, &dec_output, 1 /*blocking*/);
         if (err != SvtJxsErrorNone) {
+                svt_jpeg_xs_frame_pool_release(s->frame_pool, &dec_output);
                 log_msg(LOG_LEVEL_ERROR, MOD_NAME "Failed to get encoded packet, error code: %x\n", err);
                 return DECODER_NO_FRAME;
         }
+        DEBUG_TIMER_STOP(jpegxs_decompress);
 
-        s->convert_from_planar(&dec_output.image, s->image_config.width, s->image_config.height, dst);
+        DEBUG_TIMER_START(jpegxs_dconvert);
+        jpegxs_to_uv_convert(s, &dec_output.image, s->image_config.width, s->image_config.height, dst);
+        DEBUG_TIMER_STOP(jpegxs_dconvert);
         svt_jpeg_xs_frame_pool_release(s->frame_pool, &dec_output);
         return DECODER_GOT_FRAME;
 }
@@ -251,10 +330,22 @@ static void jpegxs_decompress_done(void *state) {
        delete (struct state_decompress_jpegxs *) state;
 }
 
+static enum subsampling
+get_jxs_subsampling_to_ug(ColourFormat_t jxs_ss)
+{
+        switch (jxs_ss) {
+        case COLOUR_FORMAT_PLANAR_YUV420: return SUBS_420;
+        case COLOUR_FORMAT_PLANAR_YUV422: return SUBS_422;
+        case COLOUR_FORMAT_PLANAR_YUV444_OR_RGB:
+                return SUBS_444;
+        default:
+                MSG(ERROR, "Unexpected JXS subsampling: %d!\n", jxs_ss);
+                abort();
+        }
+}
+
 static int jpegxs_decompress_get_priority(codec_t compression, struct pixfmt_desc internal, codec_t ugc)
 {
-        UNUSED(internal);
-
         if (compression != JPEG_XS) {
                 return VDEC_PRIO_NA;
         }
@@ -264,11 +355,23 @@ static int jpegxs_decompress_get_priority(codec_t compression, struct pixfmt_des
         }
 
         // supported output formats
-        if (get_jpegxs_to_uv_conversion(ugc) != nullptr) {
-                return VDEC_PRIO_PREFERRED;
+        const auto *conv = get_jpegxs_to_uv_conversion(ugc, internal.subsampling);
+        if (conv == nullptr) { // either ugc unsupported or not compatible with internal.subsamling
+                return VDEC_PRIO_NA;
         }
 
-        return VDEC_PRIO_NA;
+        const enum subsampling exp_subsampling =
+            get_jxs_subsampling_to_ug(conv->src);
+        const bool int_rgb = exp_subsampling == SUBS_444;
+        if (int_rgb != internal.rgb) {
+                const char *exp = int_rgb ? "RGB" : "YUV";
+                const char *received= internal.rgb ? "RGB" : "YUV";
+                MSG(WARNING, "Conversion assumes %s but content has %s\n", exp,
+                    received);
+                return VDEC_PRIO_NA;
+        }
+
+        return VDEC_PRIO_PREFERRED;
 }
 
 static const struct video_decompress_info jpegxs_info = {
