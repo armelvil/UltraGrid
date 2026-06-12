@@ -543,12 +543,30 @@ static void *writer(void *arg)
 
                     // Check if a replica with the same host and port already exists
                     bool exists = false;
-                    char check_addr[ADDR_STR_BUF_LEN];
-                    snprintf(check_addr, sizeof(check_addr), "%s:%d", host, tx_port);
-                    for (auto r : s->replicas) {
-                        if (r->ip_address == check_addr) {
-                            exists = true;
-                            break;
+
+                    // Resolve user input address to sockaddr for proper comparison
+                    struct sockaddr_storage check_sockaddr;
+                    socklen_t check_socklen = 0;
+                    int mode = 0;
+                    int res = resolve_addrinfo(host, tx_port, &check_sockaddr, &check_socklen, &mode);
+
+                    if (res == 0) {
+                        // Set port in the resolved sockaddr for comparison
+                        switch(check_sockaddr.ss_family) {
+                            case AF_INET:
+                                reinterpret_cast<struct sockaddr_in *>(&check_sockaddr)->sin_port = htons(tx_port);
+                                break;
+                            case AF_INET6:
+                                reinterpret_cast<struct sockaddr_in6 *>(&check_sockaddr)->sin6_port = htons(tx_port);
+                                break;
+                        }
+
+                        for (auto r : s->replicas) {
+                            if (sockaddr_compare(reinterpret_cast<const struct sockaddr *>(&check_sockaddr),
+                                                 reinterpret_cast<const struct sockaddr *>(&r->sockaddr)) == 0) {
+                                exists = true;
+                                break;
+                            }
                         }
                     }
 
@@ -559,7 +577,7 @@ static void *writer(void *arg)
                         continue;
                     }
 
-                    struct common_opts opts = COMMON_OPTS_INIT;
+                    struct rxtx_params opts = RXTX_INIT;
                     int idx = create_output_port(s,
                             host, 0, tx_port, s->bufsize, &opts,
                             compress, nullptr, RATE_UNLIMITED, s->server_socket != nullptr);
