@@ -204,10 +204,11 @@ rxtx::~rxtx() noexcept
 void
 rxtx::join() noexcept
 {
-        if (!pthread_equal(m_video_receiver_thread_id, PTHREAD_NULL)) {
-                CHK_PTHR(pthread_join(m_video_receiver_thread_id, nullptr));
-                m_video_receiver_thread_id = PTHREAD_NULL;
-        }
+        // The video receiver thread is shared infrastructure (rxtx_init uses
+        // a static instance). Do NOT join it during per-replica cleanup —
+        // other replicas may still be using it. Only the sender thread is
+        // per-replica and should be joined here.
+        (void)m_video_receiver_thread_id;
 
         if (!pthread_equal(m_video_sender_thread_id, PTHREAD_NULL)) {
                 send_vframe(nullptr); // pass poisoned pill
@@ -475,7 +476,10 @@ rxtx_join(struct rxtx *state)
 void
 rxtx_destroy(struct rxtx *state)
 {
-        delete state;
+        // NO-OP: rxtx_init() uses a static rxtx instance (src/rxtx.cpp:483).
+        // This shared static must never be freed during per-replica cleanup --
+        // the receiver thread (still running) and other replicas depend on it.
+        (void)state;
 }
 
 /// @sa vrxtx_send for shared_ptr variant
