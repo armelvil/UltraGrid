@@ -434,6 +434,7 @@ const char *response_status_to_text(int status)
                 { RESPONSE_REQ_TIMEOUT, "Request Timeout" },
                 { RESPONSE_INT_SERV_ERR, "Internal Server Error" },
                 { RESPONSE_NOT_IMPL, "Not Implemented" },
+                { RESPONSE_CONFLICT, "Conflict" },
         };
 
         auto it = mapping.find(status);
