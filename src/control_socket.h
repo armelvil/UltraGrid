@@ -55,6 +55,7 @@ struct module;
  * @retval 0 if success
  */
 int control_init(int port, int connection_type, struct control_state **state, struct module *root_module, int force_ip_version);
+int control_get_port(struct control_state *state);
 struct control_state *get_control_state(struct module *mod);
 void control_start(struct control_state *state);
 void control_done(struct control_state *s);
@@ -68,4 +69,3 @@ int control_audio_ch_report_count(struct control_state *state);
 #endif
 
 #endif // control_socket_h_
-

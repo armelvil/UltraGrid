@@ -45,6 +45,7 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include <atomic>                                 // for atomic, memory_order
 #include <cassert>                                // for assert
 #include <cctype>                                 // for isdigit
@@ -162,6 +163,8 @@ struct hd_rum_translator_state {
         pthread_mutex_init(&qfull_mtx, NULL);
         pthread_cond_init(&qempty_cond, NULL);
         pthread_cond_init(&qfull_cond, NULL);
+        mod.new_message = new_message_received;
+        mod.priv_data = this;
     }
     ~hd_rum_translator_state() {
         CHK_PTHR(pthread_mutex_destroy(&qempty_mtx));
@@ -172,6 +175,9 @@ struct hd_rum_translator_state {
     }
     struct module mod;
     int bufsize = 0;
+// ── WAVELET PATCH BEGIN: initialize with standard UG port, is overwritten with params.port later ──────────────────
+    int default_tx_port = 5004;
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
     struct control_state *control_state = nullptr;
     struct item *queue = nullptr;
     struct item *qhead = nullptr;
@@ -196,6 +202,11 @@ struct hd_rum_translator_state {
 static struct item *qinit(int qsize);
 static void qdestroy(struct item *queue);
 static void *writer(void *arg);
+// ── WAVELET PATCH BEGIN: create/delete/list-port helpers ──────────────────
+static struct response *create_port_helper(struct hd_rum_translator_state *s, struct msg_universal *msg);
+static struct response *remove_port_helper(struct hd_rum_translator_state *s, const char *port_spec);
+static struct response *list_port_helper(struct hd_rum_translator_state *s);
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
 
 static void signal_handler(int signum)
 {
@@ -394,108 +405,262 @@ static int create_output_port(struct hd_rum_translator_state *s,
         return idx;
 }
 
+// ── WAVELET PATCH BEGIN: create/delete/list-port helpers ──────────────────
+static struct response *create_port_helper(struct hd_rum_translator_state *s,
+                                           struct msg_universal *msg)
+{
+    // format of parameters is either:
+    // <host>:<port> [<compression>]
+    // or (for compat with older CoUniverse version)
+    // <host> <port> [<compression>]
+    char buffer[2048];
+    char *host_port, *port_str = NULL, *save_ptr;
+    char *host;
+    int tx_port;
+    strtok_r(msg->text, " ", &save_ptr);
+    host_port = strtok_r(NULL, " ", &save_ptr);
+    if (host_port && (strchr(host_port, ':') != NULL || (port_str = strtok_r(NULL, " ", &save_ptr)) != NULL)) {
+        if (port_str) {
+            host = host_port;
+            tx_port = stoi(port_str);
+        } else {
+            tx_port = stoi(strrchr(host_port, ':') + 1);
+            host = host_port;
+            *strrchr(host_port, ':') = '\0';
+        }
+        // handle square brackets around an IPv6 address
+        if (host[0] == '[' && host[strlen(host) - 1] == ']') {
+            host += 1;
+            host[strlen(host) - 1] = '\0';
+        }
+    } else {
+        const char *err_msg = "wrong format\n";
+        log_msg(LOG_LEVEL_ERROR, "%s\n", err_msg);
+        return new_response(RESPONSE_BAD_REQUEST, err_msg);
+    }
+    char *compress = strtok_r(NULL, " ", &save_ptr);
+
+    // Check if a replica with the same resolved address and port already exists
+    char check_buf[256];
+    snprintf(check_buf, sizeof(check_buf), "%s:%d", host, tx_port);
+    struct sockaddr_storage new_addr = get_sockaddr(check_buf, 0);
+
+    bool exists = false;
+    if (new_addr.ss_family != AF_UNSPEC) {
+        for (auto r : s->replicas) {
+            if (sockaddr_compare((struct sockaddr *)&r->sockaddr, (struct sockaddr *)&new_addr) == 0) {
+                exists = true;
+                break;
+            }
+        }
+    }
+
+    if (exists) {
+        log_msg(LOG_LEVEL_ERROR, "Output port %s:%d already exists.\n", host, tx_port);
+        return new_response(RESPONSE_CONFLICT, "Port already exists\n");
+    }
+    struct rxtx_params opts = RXTX_INIT;
+    int idx = create_output_port(
+        s, host, 0, tx_port, s->bufsize, &opts, compress, nullptr,
+        RTP_RATE_UNLIMITED, s->server_socket != nullptr);
+
+    if(idx < 0) {
+        free_message((struct message *) msg, new_response(RESPONSE_INT_SERV_ERR, "Cannot create output port."));
+    }
+
+    if (compress) {
+        snprintf(buffer, sizeof(buffer),
+                 "Created new transcoding output port %s:%d:0x%08" PRIx32 ".\n",
+                 host, tx_port, recompress_get_port_ssrc(s->recompress, idx));
+    } else {
+        snprintf(buffer, sizeof(buffer), "Created new forwarding output port %s:%d.\n", host, tx_port);
+    }
+
+    log_msg(LOG_LEVEL_NOTICE, "%s", buffer);
+    return new_response(RESPONSE_OK, buffer);
+}
+
+static struct response *remove_port_helper(struct hd_rum_translator_state *s,
+                                           const char *port_spec)
+{
+    int index = -1;
+    char buffer[256];
+    // Try numeric index first.
+    bool is_all_digits = true;
+    for (int j = 0; port_spec[j] != '\0'; j++) {
+        if (!isdigit((unsigned char)port_spec[j])) {
+            is_all_digits = false;
+            break;
+        }
+    }
+
+    if (is_all_digits && strlen(port_spec) > 0) {
+        int i = stoi(port_spec);
+        if (i >= 0 && i < (int)s->replicas.size()) {
+            index = i;
+        } else {
+            snprintf(buffer, sizeof(buffer), "Invalid port index: %d. Not removing.\n", i);
+            log_msg(LOG_LEVEL_NOTICE, "%s", buffer);
+            return new_response(RESPONSE_NOT_FOUND, buffer);
+        }
+
+    } else {
+        // Input was not digits, so try matching by resolved sockaddr (handles IPv4/IPv6/DNS names).
+        int i = 0;
+        // Check for resolved sockaddr match (handles IPv4, IPv6, DNS names)
+        struct sockaddr_storage target_addr = {};
+        socklen_t target_len = 0;
+        int has_port = strchr(port_spec, ':') != NULL;
+        if (has_port) {
+            target_addr = get_sockaddr(port_spec, 0);
+            // get_sockaddr returns AF_UNSPEC on error — fall through to name match
+            if (target_addr.ss_family != AF_UNSPEC) {
+                target_len = sizeof(target_addr);
+            }
+        } else if (s->default_tx_port > 0) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "%s:%d", port_spec, s->default_tx_port);
+            target_addr = get_sockaddr(buf, 0);
+            if (target_addr.ss_family != AF_UNSPEC) {
+                target_len = sizeof(target_addr);
+            }
+        }
+
+        for (auto r : s->replicas) {
+            if (target_len > 0 && sockaddr_compare((struct sockaddr *)&r->sockaddr, (struct sockaddr *)&target_addr) == 0) {
+                index = i;
+                break;
+            }
+            i++;
+        }
+        // If not found by IP, check by port name
+        if (index == -1) {
+            i = 0;
+            for (auto r : s->replicas) {
+                if (strcmp(r->mod.name, port_spec) == 0) {
+                    index = i;
+                    break;
+                }
+                i++;
+            }
+        }
+        // Log if neither IP address or name matches
+        if (index == -1) {
+            snprintf(buffer, sizeof(buffer), "Unknown port (IP or name): %s. Not removing.\n", port_spec);
+            log_msg(LOG_LEVEL_NOTICE, "%s", buffer);
+            return new_response(RESPONSE_NOT_FOUND, buffer);
+        }
+    }
+
+    if (index >= 0) {
+        // If we have a valid index, remove the specified replica.
+        recompress_remove_port(s->recompress, index);
+        delete s->replicas[index];
+        s->replicas.erase(s->replicas.begin() + index);
+        snprintf(buffer, sizeof(buffer), "Deleted output port %d.\n", index);
+        log_msg(LOG_LEVEL_NOTICE, "%s", buffer);
+        return new_response(RESPONSE_OK, buffer);
+    }
+    return new_response(RESPONSE_INT_SERV_ERR, "Internal error: port index logic fault.\n");
+}
+
+static struct response *list_port_helper(struct hd_rum_translator_state *s)
+{
+    char buffer[2048];
+    string port_list = "\n";
+    if (s->replicas.empty()) {
+        port_list += "  No ports configured.\n";
+    } else {
+        char header[512];
+        snprintf(header, sizeof(header), "%-3s %-40s %6s  %-12s\n", "Idx", "IP Address (AF_INET6)", "Port", "Type");
+        port_list += header;
+
+        for (size_t i = 0; i < s->replicas.size(); i++) {
+            const auto *replica = s->replicas[i];
+            const char *type_str = nullptr;
+            switch (replica->type) {
+                case replica::type_t::USE_SOCK:     type_str = "forwarding";  break;
+                case replica::type_t::RECOMPRESS:   type_str = "transcoding"; break;
+                default:                            type_str = "none";        break;
+            }
+
+            char addr_str[ADDR_STR_BUF_LEN];
+            struct sockaddr_storage sa_copy = replica->sockaddr;
+            get_sockaddr_str((struct sockaddr *)&sa_copy, replica->sockaddr_len, addr_str, sizeof(addr_str));
+            char port_info[512];
+            snprintf(port_info, sizeof(port_info), "[%zu] %-40s %6d  %-12s\n",
+                     i, addr_str, replica->m_tx_port, type_str);
+            port_list += port_info;
+        }
+    }
+
+    snprintf(buffer, sizeof(buffer), "\n Ports:\n%s\n", port_list.c_str());
+    log_msg(LOG_LEVEL_NOTICE, "%s", buffer);
+    return new_response(RESPONSE_OK, buffer);
+}
+
+// Process all pending control messages on the root module.
+static void
+process_root_messages(struct hd_rum_translator_state *s)
+{
+    struct msg_universal *msg;
+    while ((msg = (struct msg_universal *) check_message(&s->mod))) {
+        struct response *r = NULL;
+        if (strncasecmp(msg->text, "delete-port ", strlen("delete-port ")) == 0) {
+            const char *port_spec = msg->text + strlen("delete-port ");
+            if (*port_spec == '\0') {
+                port_spec = "all";
+            }
+            r = remove_port_helper(s, port_spec);
+        } else if (strncasecmp(msg->text, "create-port", strlen("create-port")) == 0) {
+            r = create_port_helper(s, msg);
+        } else if (strncasecmp(msg->text, "list-ports", strlen("list-ports")) == 0 ||
+                strncasecmp(msg->text, "query-ports", strlen("query-ports")) == 0) {
+            r = list_port_helper(s);
+        } else {
+            const char *err_msg = "Unknown command\n";
+            r = new_response(RESPONSE_BAD_REQUEST, err_msg);
+        }
+        free_message((struct message *) msg, r);
+    }
+}
+
+// Process all pending messages on every replica module.
+static void
+process_replica_messages(struct hd_rum_translator_state *s)
+{
+    for (unsigned int i = 0; i < s->replicas.size(); i++) {
+        struct message *msg;
+        while ((msg = check_message(&s->replicas[i]->mod))) {
+            struct response *r = change_replica_type(s, &s->replicas[i]->mod, msg, i);
+            free_message(msg, r);
+        }
+    }
+}
+
+// Process all pending control messages (root + replicas).
+// Called both at the top of the cycle and between packet batches
+// so control commands are never starved during heavy traffic.
+static void
+process_all_messages(struct hd_rum_translator_state *s)
+{
+    process_replica_messages(s);
+    process_root_messages(s);
+}
+
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
+
 static void *writer(void *arg)
 {
     struct hd_rum_translator_state *s =
         (struct hd_rum_translator_state *) arg;
 
     while (1) {
-        // first check messages
-        for (unsigned int i = 0; i < s->replicas.size(); i++) {
-            struct message *msg;
-            while ((msg = check_message(&s->replicas[i]->mod))) {
-                struct response *r = change_replica_type(s, &s->replicas[i]->mod, msg, i);
-                free_message(msg, r);
-            }
-        }
+        // Check messages before starting packet processing.
+        process_all_messages(s);
 
-        struct msg_universal *msg;
-        while ((msg = (struct msg_universal *) check_message(&s->mod))) {
-            struct response *r = NULL;
-            if (strncasecmp(msg->text, "delete-port ", strlen("delete-port ")) == 0) {
-                char *port_spec = msg->text + strlen("delete-port ");
-                int index = -1;
-                if (isdigit(port_spec[0])) {
-                    int i = stoi(port_spec);
-                    if (i >= 0 && i < (int) s->replicas.size()) {
-                        index = i;
-                    } else {
-                        log_msg(LOG_LEVEL_WARNING, "Invalid port index: %d. Not removing.\n", i);
-                    }
-                } else {
-                    int i = 0;
-                    for (auto r : s->replicas) {
-                        if (strcmp(r->mod.name, port_spec) == 0) {
-                            index = i;
-                            break;
-                        }
-                        i++;
-                    }
-                    if (index == -1) {
-                        log_msg(LOG_LEVEL_WARNING, "Unknown port name: %s. Not removing.\n", port_spec);
-                    }
-                }
-                if (index >= 0) {
-                    recompress_remove_port(s->recompress, index);
-                    delete s->replicas[index];
-                    s->replicas.erase(s->replicas.begin() + index);
-                    log_msg(LOG_LEVEL_NOTICE, "Deleted output port %d.\n", index);
-                }
-            } else if (strncasecmp(msg->text, "create-port", strlen("create-port")) == 0) {
-                // format of parameters is either:
-                // <host>:<port> [<compression>]
-                // or (for compat with older CoUniverse version)
-                // <host> <port> [<compression>]
-                char *host_port, *port_str = NULL, *save_ptr;
-                char *host;
-                int tx_port;
-                strtok_r(msg->text, " ", &save_ptr);
-                host_port = strtok_r(NULL, " ", &save_ptr);
-                if (host_port && (strchr(host_port, ':') != NULL || (port_str = strtok_r(NULL, " ", &save_ptr)) != NULL)) {
-                    if (port_str) {
-                        host = host_port;
-                        tx_port = stoi(port_str);
-                    } else {
-                        tx_port = stoi(strrchr(host_port, ':') + 1);
-                        host = host_port;
-                        *strrchr(host_port, ':') = '\0';
-                    }
-                    // handle square brackets around an IPv6 address
-                    if (host[0] == '[' && host[strlen(host) - 1] == ']') {
-                        host += 1;
-                        host[strlen(host) - 1] = '\0';
-                    }
-                } else {
-                    const char *err_msg = "wrong format";
-                    log_msg(LOG_LEVEL_ERROR, "%s\n", err_msg);
-                    free_message((struct message *) msg, new_response(RESPONSE_BAD_REQUEST, err_msg));
-                    continue;
-                }
-                char *compress = strtok_r(NULL, " ", &save_ptr);
-
-                struct rxtx_params opts = RXTX_INIT;
-                int idx = create_output_port(
-                    s, host, 0, tx_port, s->bufsize, &opts, compress, nullptr,
-                    RTP_RATE_UNLIMITED, s->server_socket != nullptr);
-
-                if(idx < 0) {
-                    free_message((struct message *) msg, new_response(RESPONSE_INT_SERV_ERR, "Cannot create output port."));
-                    continue;
-                }
-
-                if(compress)
-                    log_msg(LOG_LEVEL_NOTICE, "Created new transcoding output port %s:%d:0x%08" PRIx32 ".\n", host, tx_port, recompress_get_port_ssrc(s->recompress, idx));
-                else
-                    log_msg(LOG_LEVEL_NOTICE, "Created new forwarding output port %s:%d.\n", host, tx_port);
-
-            } else {
-                r = new_response(RESPONSE_BAD_REQUEST, NULL);
-            }
-
-            free_message((struct message *) msg, r ? r : new_response(RESPONSE_OK, NULL));
-        }
-
-        // then process incoming packets
+        // Process incoming packets in batches, checking for
+        // control messages between batches so they're never starved.
         while (s->qhead != s->qtail) {
             if(s->qhead->size == 0) { // poisoned pill
                 return NULL;
@@ -511,7 +676,7 @@ static void *writer(void *arg)
 
             // distribute it to output ports that don't need transcoding
 #ifdef _WIN32
-            // send it asynchronously in MSW (performance optimalization)
+            // send it asynchronously in MSW (performance optimization)
             SleepEx(0, true); // allow system to call our completion routines in APC
             int ref = 0;
             for (unsigned int i = 0; i < s->replicas.size(); i++) {
@@ -553,11 +718,17 @@ static void *writer(void *arg)
             s->qfull = 0;
             pthread_cond_signal(&s->qfull_cond);
             pthread_mutex_unlock(&s->qfull_mtx);
+
+            // Check for control messages after every packet so they
+            // are never starved during continuous high-throughput traffic.
+            process_all_messages(s);
         }
 
         pthread_mutex_lock(&s->qempty_mtx);
-        if (s->qempty)
+        if (s->qempty) {
+            // Wait indefinitely - we'll be woken up by new packets or messages
             pthread_cond_wait(&s->qempty_cond, &s->qempty_mtx);
+        }
         s->qempty = 1;
         pthread_mutex_unlock(&s->qempty_mtx);
     }
@@ -1084,6 +1255,10 @@ int main(int argc, char **argv)
     }
 
     state.bufsize = params.bufsize;
+
+    if (params.port > 0) {
+        state.default_tx_port = params.port;
+    }
 
     qsize = state.bufsize / 8000;
 

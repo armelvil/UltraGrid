@@ -56,7 +56,7 @@
 #include <sys/socket.h> // for send
 #include <sys/types.h>  // for ssize_t
 #endif
-#include <sys/time.h>              // for timeval, gettimeofday
+#include <sys/time.h>
 
 #include "compat/net.h" // for net related
 #include "compat/platform_pipe.h"
@@ -86,7 +86,7 @@ typedef void *sso_val_type;
 
 struct client {
         fd_t fd;
-        char buff[1024];
+        char buff[2048];
         int buff_len;
 
         struct client *prev;
@@ -655,17 +655,25 @@ static int process_msg(struct control_state *s, fd_t client_fd, char *message, s
                 dump_tree(s->root_module, 0);
                 resp = new_response(RESPONSE_OK, NULL);
         } else { // assume message in format "path message"
-                struct msg_universal *msg = (struct msg_universal *)
-                        new_message(sizeof(struct msg_universal));
+            struct msg_universal *msg = (struct msg_universal *)
+            new_message(sizeof(struct msg_universal));
 
-                if (strchr(message, ' ')) {
-                        memcpy(path, message, strchr(message, ' ') - message);
-                        strncpy(msg->text, strchr(message, ' ') + 1, sizeof(path) - 1);
-                } else {
-                        strncpy(path, message, sizeof(path) - 1); // empty message ??
+            if (strchr(message, ' ')) {
+                size_t path_len = strchr(message, ' ') - message;
+                memcpy(path, message, path_len);
+                path[path_len] = '\0';
+                strncpy(msg->text, strchr(message, ' ') + 1, sizeof(msg->text) - 1);
+
+                // If path is "root", send directly to root module
+                if (strcmp(path, "root") == 0) {
+                    path[0] = '\0';
                 }
+            } else {
+                path[0] = '\0';
+                strncpy(msg->text, message, sizeof(msg->text) - 1);
+            }
 
-                resp = send_message(s->root_module, path, (struct message *) msg);
+            resp = send_message_sync(s->root_module, path, (struct message *) msg, 100, 0);
         }
 
         if(!resp) {
