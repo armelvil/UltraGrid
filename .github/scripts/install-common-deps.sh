@@ -187,7 +187,15 @@ install_omt() (
 )
 
 install_openapv() (
-        git clone --depth 1 https://github.com/AcademySoftwareFoundation/openapv.git
+        # Pin to v0.3.0.0: this is the last OpenAPV release whose
+        # oapvm_create(int *err) signature matches what FFmpeg master's
+        # liboapvenc.c calls. OpenAPV main broke the API in the "New API Set
+        # (1.x)" rewrite (merged 2026-07-06), so a fresh FFmpeg+OpenAPV build
+        # fails to compile liboapvenc.o against main. Upstream CI only "works"
+        # while its cached FFmpeg build predates that break.
+        # GIT issue for openapv:  https://github.com/AcademySoftwareFoundation/openapv/issues/264
+        git clone --depth 1 --branch v0.3.0.0 \
+                https://github.com/AcademySoftwareFoundation/openapv.git
         cmake -B openapv/build -S openapv -G"Unix Makefiles" \
                 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
         cmake --build openapv/build --parallel "$(nproc)"

@@ -42,6 +42,7 @@
 
 #include "hd-rum-translator/hd-rum-recompress.h"
 
+#include <atomic>
 #include <cassert>
 #include <cinttypes>
 #include <chrono>
@@ -94,6 +95,7 @@ struct recompress_output_port {
         bool active = false;
 };
 
+// ── WAVELET PATCH BEGIN: add shutting_down flag for clean thread shutdown ──────────────────
 struct recompress_worker_ctx {
         std::string compress_cfg;
         std::unique_ptr<compress_state, compress_state_deleter> compress;
@@ -102,7 +104,9 @@ struct recompress_worker_ctx {
         std::vector<recompress_output_port> ports;
 
         std::thread thread;
+        std::atomic<bool> shutting_down{false};
 };
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
 
 struct state_recompress {
         struct module *parent = nullptr;
@@ -181,19 +185,32 @@ static void recompress_port_write(recompress_output_port& port, shared_ptr<video
         vrxtx_send(port.rxtx.get(), std::move(frame));
 }
 
+// ── WAVELET PATCH BEGIN: unlock before writing to ports to reduce lock contention ──────────────────
 static void recompress_worker(struct recompress_worker_ctx *ctx){
         PROFILE_FUNC;
         assert(ctx->compress);
 
-        while(auto frame = compress_pop(ctx->compress.get())){
-                std::lock_guard<std::mutex> lock(ctx->ports_mut);
-                for(auto& port : ctx->ports){
-                        if(port.active)
-                                recompress_port_write(port, frame);
+        while(!ctx->shutting_down.load(std::memory_order_relaxed)){
+                auto frame = compress_pop(ctx->compress.get());
+                if(!frame) break;  // poison pill or empty queue
+
+                std::vector<recompress_output_port*> active_ports;
+                {
+                        std::lock_guard<std::mutex> lock(ctx->ports_mut);
+                        if(ctx->shutting_down.load(std::memory_order_relaxed))
+                                break;
+                        for(auto& port : ctx->ports){
+                                if(port.active)
+                                        active_ports.push_back(&port);
+                        }
+                }
+                for(auto* port : active_ports){
+                        recompress_port_write(*port, frame);
                 }
                 PROFILE_DETAIL("compress_pop");
         }
 }
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
 
 static int move_port_to_worker(struct state_recompress *s, const char *compress,
                 recompress_output_port&& port)
@@ -243,23 +260,51 @@ recompress_add_port(struct state_recompress *s, const char *host,
         return index_of_port;
 }
 
+// ── WAVELET PATCH BEGIN: defer thread join outside lock to avoid deadlock ──────────────────
 static void extract_port(struct state_recompress *s,
                 const std::string& compress_cfg, int i,
-                recompress_output_port *move_to = nullptr)
+                recompress_output_port *move_to = nullptr,
+                std::thread *out_thread = nullptr)
 {
         auto& worker = s->workers[compress_cfg];
+
+        bool worker_is_empty = false;
         {
                 std::unique_lock<std::mutex> lock(worker.ports_mut);
+
+                worker.ports[i].active = false;
+
                 if(move_to)
                         *move_to = std::move(worker.ports[i]);
+
                 worker.ports.erase(worker.ports.begin() + i);
 
                 if(worker.ports.empty()){
-                        //poison compress
+                        worker.shutting_down.store(true, std::memory_order_relaxed);
+                        // poison compress
                         compress_frame(worker.compress.get(), nullptr);
-                        worker.thread.join();
-                        s->workers.erase(compress_cfg);
+                        worker_is_empty = true;
                 }
+        }
+
+        if (worker_is_empty) {
+                // Now join or hand off the thread — no locks held, so the
+                // worker thread can freely acquire ports_mut and exit cleanly.
+                if (out_thread) {
+                        *out_thread = std::move(worker.thread);
+                } else {
+                        worker.thread.join();
+                }
+                // Safe to destroy the worker (and its compress state) only
+                // after the thread has finished or been handed off.
+                // SECONDARY DEADLOCK SITE: worker.ports elements hold a
+                // unique_ptr<rxtx, rxtx_destroy>. When the worker map entry
+                // is erased here, rxtx_destroy -> rxtx::~rxtx -> join() is
+                // called. This is safe as long as rxtx::join() does not
+                // re-acquire ports_mut or s->mut. If upstream ever changes
+                // rxtx::join() to acquire any lock also held by the worker
+                // thread at exit, this becomes a secondary deadlock site.
+                s->workers.erase(compress_cfg);
         }
 
         for(auto& p : s->index_to_port){
@@ -269,12 +314,19 @@ static void extract_port(struct state_recompress *s,
 }
 
 void recompress_remove_port(struct state_recompress *s, int index){
-        std::lock_guard<std::mutex> lock(s->mut);
-        auto [compress_cfg, i] = s->index_to_port[index];
+        std::thread thread_to_join;
+        {
+                std::lock_guard<std::mutex> lock(s->mut);
+                auto [compress_cfg, i] = s->index_to_port[index];
 
-        extract_port(s, compress_cfg, i);
-        s->index_to_port.erase(s->index_to_port.begin() + index);
+                extract_port(s, compress_cfg, i, nullptr, &thread_to_join);
+                s->index_to_port.erase(s->index_to_port.begin() + index);
+        }
+        if (thread_to_join.joinable()) {
+                thread_to_join.join();
+        }
 }
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
 
 uint32_t recompress_get_port_ssrc(struct state_recompress *s, int idx){
         std::lock_guard<std::mutex> lock(s->mut);
@@ -294,28 +346,37 @@ void recompress_port_set_active(struct state_recompress *s,
         s->workers[compress_cfg].ports[i].active = active;
 }
 
+// ── WAVELET PATCH BEGIN: defer thread join outside lock to avoid deadlock ──────────────────
 bool recompress_port_change_compress(struct state_recompress *s, int index,
                 const char *new_compress)
 {
-        std::lock_guard<std::mutex> lock(s->mut);
-        auto [old_compress, i] = s->index_to_port[index];
+        std::thread thread_to_join;
+        bool success = false;
+        {
+                std::lock_guard<std::mutex> lock(s->mut);
+                auto [old_compress, i] = s->index_to_port[index];
 
-        if(old_compress == new_compress)
-                return true;
+                if(old_compress == new_compress)
+                        return true;
 
-        recompress_output_port port;
-        extract_port(s, old_compress, i, &port);
-        int index_in_worker = move_port_to_worker(s, new_compress, std::move(port));
+                recompress_output_port port;
+                extract_port(s, old_compress, i, &port, &thread_to_join);
+                int index_in_worker = move_port_to_worker(s, new_compress, std::move(port));
 
-        if(index_in_worker < 0){
-                s->index_to_port.erase(s->index_to_port.begin() + index);
-                return false;
+                if(index_in_worker < 0){
+                        s->index_to_port.erase(s->index_to_port.begin() + index);
+                        success = false;
+                } else {
+                        s->index_to_port[index] = {new_compress, index_in_worker};
+                        success = true;
+                }
         }
-
-        s->index_to_port[index] = {new_compress, index_in_worker};
-
-        return true;
+        if(thread_to_join.joinable()){
+                thread_to_join.join();
+        }
+        return success;
 }
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
 
 static int worker_get_num_active_ports(const recompress_worker_ctx& worker){
         int ret = 0;
@@ -353,17 +414,31 @@ void recompress_process_async(state_recompress *s, const std::shared_ptr<video_f
         }
 }
 
+// ── WAVELET PATCH BEGIN: defer thread join outside lock to avoid deadlock ──────────────────
+// PRIMARY DEADLOCK SITE: if you see a hard lock on client delete/shutdown,
+// check here first. thread.join() must NOT be called while s->mut is held,
+// because the worker thread may need to acquire ports_mut (or other paths
+// may try to acquire s->mut) before it can exit. Collect threads first,
+// release the lock, then join — consistent with recompress_remove_port()
+// and recompress_port_change_compress().
 void recompress_done(struct state_recompress *s) {
+        std::vector<std::thread> threads_to_join;
         {
                 std::lock_guard<std::mutex> lock(s->mut);
                 for(auto& worker : s->workers){
-                        //poison compress
+                        worker.second.shutting_down.store(true, std::memory_order_relaxed);
+                        // poison compress to unblock the worker thread
                         compress_frame(worker.second.compress.get(), nullptr);
-
-                        worker.second.thread.join();
-                        // compress_done(worker.second.compress.get());
+                        threads_to_join.push_back(std::move(worker.second.thread));
+                }
+        }
+        // Join all worker threads AFTER releasing s->mut so the worker can
+        // exit cleanly without contending on the lock.
+        for (auto& t : threads_to_join) {
+                if (t.joinable()) {
+                        t.join();
                 }
         }
         delete s;
 }
-
+// ── WAVELET PATCH END ──────────────────────────────────────────────────────
