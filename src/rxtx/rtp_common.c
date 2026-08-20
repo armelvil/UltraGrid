@@ -325,7 +325,7 @@ init_medium_state(struct rtp_rxtx_common_priv_state *s,
         volatile int     *medium_offset = medium_defaults[t].medium_offset;
         long long         bitrate_limit = medium_defaults[t].bitrate_limit;
         enum module_class mod_cls       = medium_defaults[t].mod_cls;
-        bool              fec_help      = strstr(params_medium->fec, "help");
+        bool              fec_help      = params_medium->fec && strstr(params_medium->fec, "help");
 
         if (params_medium->rxtx_mode == 0 &&
             !fec_help) { // no RX or TX for medium
