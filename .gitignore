@@ -1,3 +1,9 @@
+bin/
+/build*
+/documentation
+/export*/
+/local/
+lib/
 configure
 Makefile
 config.guess
@@ -13,12 +19,6 @@ config.sub
 *.log
 *.vim
 uv
-bin/
-/build*
-/documentation
-/export*/
-/local/
-lib/
 aclocal.m4
 autom4te.cache
 config.log
