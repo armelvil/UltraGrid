@@ -134,6 +134,8 @@ enum rxtx_property {
         GET_RTP_COMMON_STATE, ///< RTP state - pointer to struct rtp_rxtx_common
         SET_RTP_AUD_FRM_SZ,   ///< pointer to int
         SET_ULTRAGRID_RTP_MUTLI_OUT, ///< pointer to bool
+        STOP_RECEIVER,        ///< stop the receiver for this instance only
+                              ///< (value ignored)
 };
 
 //
@@ -210,6 +212,7 @@ const char *rxtx_get_proto_long_name(const char *short_name);
 void        rxtx_join(struct rxtx *state);
 bool rxtx_ctl_property(struct rxtx *state, enum rxtx_property p, void *val,
                        size_t *len);
+void rxtx_stop_receiver(struct rxtx *state);
 void rxtx_send_audio(struct rxtx *state, const struct audio_frame2 *frame);
 struct rx_audio_frames *rxtx_recv_audio_frame(struct rxtx *s);
 void                    rxtx_free_audio_frames(struct rx_audio_frames *frames);
