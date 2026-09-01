@@ -133,6 +133,7 @@ struct ultragrid_rtp_rxtx {
         struct module *receiver_mod;
 
         atomic_bool should_exit;
+        atomic_bool stop;       ///< per-receiver stop signal (not global shutdown)
 };
 
 // protoypes
@@ -381,7 +382,7 @@ receiver_thread(void *arg)
 
         register_should_exit_callback(s->parent, should_exit, s);
 
-        while (!s->should_exit) {
+        while (!s->should_exit && !s->stop) {
                 struct timeval timeout;
                 /* Housekeeping and RTCP... */
                 time_ns_t curr_time = get_time_in_ns();
@@ -580,6 +581,11 @@ ctl_property(void *state, enum rxtx_property p,
                     s->rtp_common->medium[TX_MEDIA_AUDIO].network_device, sz);
                 return true;
         }
+        case STOP_RECEIVER:
+                (void) val;
+                (void) len;
+                s->stop = true;
+                return true;
         }
         MSG(WARNING, "Unexpected property %d queried!\n", (int) p);
         return false;
