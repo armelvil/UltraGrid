@@ -233,13 +233,21 @@ static void vidcap_ug_input_done(void *state)
         assert(s->magic == MAGIC);
 
         audio_join(s->audio);
+        /*
+         * The receiver loop is gated on the *global* should_exit flag, which
+         * is only set on whole-process shutdown. Under excl_init the switcher
+         * tears down a deselected input while the process keeps running, so
+         * we must signal the receiver to stop for this instance before
+         * joining; otherwise rxtx_join() blocks forever.
+         */
+        rxtx_stop_receiver(s->rxtx);
         rxtx_join(s->rxtx);
 
         // display_put_frame(s->display, nullptr, 0); // already done by ultragrid_rtp_video_rxtx::receiver_loop
         display_join(s->display);
         display_done(s->display);
 
-        while (simple_linked_list_size(s->frame_queue) == 0) {
+        while (simple_linked_list_size(s->frame_queue) > 0) {
                 struct av_frame *item = simple_linked_list_pop(s->frame_queue);
                 VIDEO_FRAME_DISPOSE(item->vframe);
                 AUDIO_FRAME_DISPOSE(item->aframe);
