@@ -442,6 +442,17 @@ rxtx_join(struct rxtx *state)
 }
 
 void
+rxtx_stop_receiver(struct rxtx *state)
+{
+        if (state->m_impl_funcs == nullptr ||
+            state->m_impl_funcs->ctl_property == nullptr) {
+                return;
+        }
+        state->m_impl_funcs->ctl_property(state->m_impl_state, STOP_RECEIVER,
+                                          nullptr, nullptr);
+}
+
+void
 rxtx_destroy(struct rxtx *state)
 {
         delete state;
