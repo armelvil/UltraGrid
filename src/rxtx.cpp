@@ -151,6 +151,10 @@ void
 rxtx::join() noexcept
 {
         if (!pthread_equal(m_video_receiver_thread_id, PTHREAD_NULL)) {
+                if (m_impl_funcs != nullptr &&
+                    m_impl_funcs->join_video_receiver != nullptr) {
+                        m_impl_funcs->join_video_receiver(m_impl_state);
+                }
                 CHK_PTHR(pthread_join(m_video_receiver_thread_id, nullptr));
                 m_video_receiver_thread_id = PTHREAD_NULL;
         }
@@ -439,17 +443,6 @@ void
 rxtx_join(struct rxtx *state)
 {
         state->join();
-}
-
-void
-rxtx_stop_receiver(struct rxtx *state)
-{
-        if (state->m_impl_funcs == nullptr ||
-            state->m_impl_funcs->ctl_property == nullptr) {
-                return;
-        }
-        state->m_impl_funcs->ctl_property(state->m_impl_state, STOP_RECEIVER,
-                                          nullptr, nullptr);
 }
 
 void
