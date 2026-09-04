@@ -324,10 +324,6 @@ h264_sdp_ctl_property(void *state, enum rxtx_property p,
         }
         case SET_ULTRAGRID_RTP_MUTLI_OUT:
                 abort();
-        case STOP_RECEIVER:
-                /* no standalone receiver thread here (video_recv_routine is
-                 * nullptr), nothing to stop */
-                return true;
         }
         MSG(WARNING, "Unexpected property %d queried!\n", (int) p);
         return false;
