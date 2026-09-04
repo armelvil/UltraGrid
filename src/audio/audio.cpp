@@ -321,6 +321,9 @@ void audio_join(struct state_audio *s) {
         if (!s) {
                 return;
         }
+        // coax the receiver loop to stop for this instance before joining; the
+        // loop gates on should_exit, which a global shutdown also sets
+        s->should_exit = true;
         if (!pthread_equal(s->audio_receiver_thread_id, PTHREAD_NULL)) {
                 pthread_join(s->audio_receiver_thread_id, NULL);
         }
