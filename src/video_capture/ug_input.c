@@ -209,6 +209,7 @@ static int vidcap_ug_input_init(const struct vidcap_params *cap_params, void **s
 
         if (vidcap_params_get_flags(cap_params) & VIDCAP_FLAG_AUDIO_ANY) {
                 struct audio_options opt = AUDIO_OPTIONS_INIT;
+                opt.parent               = vidcap_params_get_parent(cap_params);
                 opt.recv_cfg             = "embedded";
                 opt.display              = s->display;
                 opt.rxtx                 = s->rxtx;
@@ -234,13 +235,11 @@ static void vidcap_ug_input_done(void *state)
 
         audio_join(s->audio);
         /*
-         * The receiver loop is gated on the *global* should_exit flag, which
-         * is only set on whole-process shutdown. Under excl_init the switcher
-         * tears down a deselected input while the process keeps running, so
-         * we must signal the receiver to stop for this instance before
-         * joining; otherwise rxtx_join() blocks forever.
+         * rxtx_join() coaxes the per-instance receiver to stop (via the
+         * backend's join_video_receiver slot) and then waits for it. Order
+         * matters: the audio receiver uses the rxtx, so it must stop first
+         * (done by audio_join() above).
          */
-        rxtx_stop_receiver(s->rxtx);
         rxtx_join(s->rxtx);
 
         // display_put_frame(s->display, nullptr, 0); // already done by ultragrid_rtp_video_rxtx::receiver_loop
