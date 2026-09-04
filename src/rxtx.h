@@ -52,7 +52,7 @@
 #include "utils/macros.h" // for STR_LEN
 
 enum {
-        RXTX_ABI_VERSION = 6,
+        RXTX_ABI_VERSION = 7,
 };
 
 struct audio_desc;
@@ -134,8 +134,6 @@ enum rxtx_property {
         GET_RTP_COMMON_STATE, ///< RTP state - pointer to struct rtp_rxtx_common
         SET_RTP_AUD_FRM_SZ,   ///< pointer to int
         SET_ULTRAGRID_RTP_MUTLI_OUT, ///< pointer to bool
-        STOP_RECEIVER,        ///< stop the receiver for this instance only
-                              ///< (value ignored)
 };
 
 //
@@ -180,6 +178,7 @@ typedef void *rxtx_send_shr_ptr_video_frame_fn;
 typedef void  rxtx_send_video_frame_fn(void *state, struct video_frame *f);
 typedef void *rxtx_vrecv_routine_fn(void *state);
 typedef void  rxtx_join_video_sender_fn(void *state);
+typedef void  rxtx_join_video_receiver_fn(void *state);
 
 struct rxtx_info {
         const char     *long_name;
@@ -195,6 +194,7 @@ struct rxtx_info {
         rxtx_send_video_frame_fn         *send_video_frame_c;
         rxtx_vrecv_routine_fn            *video_recv_routine;
         rxtx_join_video_sender_fn        *join_video_sender;
+        rxtx_join_video_receiver_fn      *join_video_receiver;
 };
 
 #ifdef __cplusplus
@@ -212,7 +212,6 @@ const char *rxtx_get_proto_long_name(const char *short_name);
 void        rxtx_join(struct rxtx *state);
 bool rxtx_ctl_property(struct rxtx *state, enum rxtx_property p, void *val,
                        size_t *len);
-void rxtx_stop_receiver(struct rxtx *state);
 void rxtx_send_audio(struct rxtx *state, const struct audio_frame2 *frame);
 struct rx_audio_frames *rxtx_recv_audio_frame(struct rxtx *s);
 void                    rxtx_free_audio_frames(struct rx_audio_frames *frames);
