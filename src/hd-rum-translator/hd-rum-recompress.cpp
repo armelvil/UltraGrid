@@ -245,9 +245,11 @@ recompress_add_port(struct state_recompress *s, const char *host,
 
 static void extract_port(struct state_recompress *s,
                 const std::string& compress_cfg, int i,
-                recompress_output_port *move_to = nullptr)
+                recompress_output_port *move_to,
+                std::thread *out_thread)
 {
         auto& worker = s->workers[compress_cfg];
+        bool worker_is_empty = false;
         {
                 std::unique_lock<std::mutex> lock(worker.ports_mut);
                 if(move_to)
@@ -257,10 +259,18 @@ static void extract_port(struct state_recompress *s,
                 if(worker.ports.empty()){
                         //poison compress
                         compress_frame(worker.compress.get(), nullptr);
-                        worker.thread.join();
-                        s->workers.erase(compress_cfg);
+                        worker_is_empty = true;
                 }
         }
+
+        // Hand the worker thread back to the caller once the worker is empty,
+        // so that the caller can join it (and erase the emptied worker from
+        // s->workers) strictly outside ports_mut. Joining here would deadlock:
+        // the worker needs ports_mut to observe the poison and exit, and if we
+        // erase the worker here, rxtx_destroy -> rxtx::join() would run while
+        // ports_mut is still held.
+        if(worker_is_empty)
+                *out_thread = std::move(worker.thread);
 
         for(auto& p : s->index_to_port){
                 if(p.first == compress_cfg && p.second > i)
@@ -269,11 +279,25 @@ static void extract_port(struct state_recompress *s,
 }
 
 void recompress_remove_port(struct state_recompress *s, int index){
-        std::lock_guard<std::mutex> lock(s->mut);
-        auto [compress_cfg, i] = s->index_to_port[index];
+        std::thread thread_to_join;
+        std::string compress_cfg;
+        {
+                std::lock_guard<std::mutex> lock(s->mut);
+                auto [cfg, i] = s->index_to_port[index];
+                compress_cfg = std::move(cfg);
+                extract_port(s, compress_cfg, i, nullptr, &thread_to_join);
+                s->index_to_port.erase(s->index_to_port.begin() + index);
+        }
 
-        extract_port(s, compress_cfg, i);
-        s->index_to_port.erase(s->index_to_port.begin() + index);
+        // Join the emptied worker's thread and remove it from the map strictly
+        // outside s->mut. The worker is empty here, so the erase destroys no
+        // ports and triggers no rxtx teardown; it just prevents a later
+        // move_port_to_worker() from resurrecting this joined worker.
+        if(thread_to_join.joinable()){
+                thread_to_join.join();
+                std::lock_guard<std::mutex> lock(s->mut);
+                s->workers.erase(compress_cfg);
+        }
 }
 
 uint32_t recompress_get_port_ssrc(struct state_recompress *s, int idx){
@@ -297,24 +321,39 @@ void recompress_port_set_active(struct state_recompress *s,
 bool recompress_port_change_compress(struct state_recompress *s, int index,
                 const char *new_compress)
 {
-        std::lock_guard<std::mutex> lock(s->mut);
-        auto [old_compress, i] = s->index_to_port[index];
+        std::thread thread_to_join;
+        std::string old_compress;
+        bool success = false;
+        {
+                std::lock_guard<std::mutex> lock(s->mut);
+                auto [cfg, i] = s->index_to_port[index];
+                old_compress = std::move(cfg);
 
-        if(old_compress == new_compress)
-                return true;
+                if(old_compress == new_compress)
+                        return true;
 
-        recompress_output_port port;
-        extract_port(s, old_compress, i, &port);
-        int index_in_worker = move_port_to_worker(s, new_compress, std::move(port));
+                recompress_output_port port;
+                extract_port(s, old_compress, i, &port, &thread_to_join);
+                int index_in_worker = move_port_to_worker(s, new_compress, std::move(port));
 
-        if(index_in_worker < 0){
-                s->index_to_port.erase(s->index_to_port.begin() + index);
-                return false;
+                if(index_in_worker < 0){
+                        s->index_to_port.erase(s->index_to_port.begin() + index);
+                } else {
+                        s->index_to_port[index] = {new_compress, index_in_worker};
+                        success = true;
+                }
         }
 
-        s->index_to_port[index] = {new_compress, index_in_worker};
+        // Join the emptied old worker's thread and remove it from the map
+        // strictly outside s->mut, so a later move_port_to_worker(old_compress)
+        // re-creates a fresh worker instead of resurrecting this joined one.
+        if(thread_to_join.joinable()){
+                thread_to_join.join();
+                std::lock_guard<std::mutex> lock(s->mut);
+                s->workers.erase(old_compress);
+        }
 
-        return true;
+        return success;
 }
 
 static int worker_get_num_active_ports(const recompress_worker_ctx& worker){
@@ -354,15 +393,22 @@ void recompress_process_async(state_recompress *s, const std::shared_ptr<video_f
 }
 
 void recompress_done(struct state_recompress *s) {
+        std::vector<std::thread> threads_to_join;
         {
                 std::lock_guard<std::mutex> lock(s->mut);
                 for(auto& worker : s->workers){
                         //poison compress
                         compress_frame(worker.second.compress.get(), nullptr);
 
-                        worker.second.thread.join();
-                        // compress_done(worker.second.compress.get());
+                        threads_to_join.push_back(std::move(worker.second.thread));
                 }
+        }
+
+        // Join every worker thread strictly outside s->mut, so each worker can
+        // acquire ports_mut, observe the poison, and exit.
+        for(auto& thread : threads_to_join){
+                if(thread.joinable())
+                        thread.join();
         }
         delete s;
 }
