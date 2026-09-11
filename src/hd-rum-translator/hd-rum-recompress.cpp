@@ -206,7 +206,8 @@ static int move_port_to_worker(struct state_recompress *s, const char *compress,
                         s->workers.erase(compress);
                         return -1;
                 }
-
+        }
+        if(!worker.thread.joinable()){ // respawn thread if it was poisoned/joined on remove
                 worker.thread = std::thread(recompress_worker, &worker);
         }
 
@@ -248,23 +249,34 @@ static void extract_port(struct state_recompress *s,
                 recompress_output_port *move_to = nullptr)
 {
         auto& worker = s->workers[compress_cfg];
+        bool worker_empty = false;
         {
                 std::unique_lock<std::mutex> lock(worker.ports_mut);
                 if(move_to)
                         *move_to = std::move(worker.ports[i]);
                 worker.ports.erase(worker.ports.begin() + i);
 
-                // Keep the worker (and its compress_state + thread) alive even
-                // when it becomes empty. Do NOT poison the compress and do NOT
-                // erase the worker from s->workers here. Erasing/recreating a
-                // worker against the single shared parent module corrupts the
-                // parent's child-list / refcount accounting and trips the
-                // `assert(found)` in module_del_ref on add/remove/add/remove.
-                // Leaving the thread to block in compress_pop() keeps one
-                // compress module per compression-string for the parent's whole
-                // lifetime, which is the invariant module.c expects. A later
-                // move_port_to_worker() reuses this idle worker instead of
-                // re-registering a fresh compress module.
+                if(worker.ports.empty()){
+                        // Poison the compress so the worker thread can observe
+                        // the poison and exit, but KEEP the worker entry (and its
+                        // compress_state) in s->workers. Erasing/recreating a
+                        // worker against the single shared parent module corrupts
+                        // the parent's child-list / refcount accounting and trips
+                        // the `assert(found)` in module_del_ref on
+                        // add/remove/add/remove. Keeping the compress_state alive
+                        // preserves one compress module per compression-string
+                        // for the parent's whole lifetime. The thread is joined
+                        // below (outside ports_mut) and respawned on re-add by
+                        // move_port_to_worker().
+                        compress_frame(worker.compress.get(), nullptr);
+                        worker_empty = true;
+                }
+        }
+
+        // Join the worker thread outside ports_mut, so the worker can acquire
+        // ports_mut, observe the poison, and exit.
+        if(worker_empty){
+                worker.thread.join();
         }
 
         for(auto& p : s->index_to_port){
