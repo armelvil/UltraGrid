@@ -245,32 +245,27 @@ recompress_add_port(struct state_recompress *s, const char *host,
 
 static void extract_port(struct state_recompress *s,
                 const std::string& compress_cfg, int i,
-                recompress_output_port *move_to,
-                std::thread *out_thread)
+                recompress_output_port *move_to = nullptr)
 {
         auto& worker = s->workers[compress_cfg];
-        bool worker_is_empty = false;
         {
                 std::unique_lock<std::mutex> lock(worker.ports_mut);
                 if(move_to)
                         *move_to = std::move(worker.ports[i]);
                 worker.ports.erase(worker.ports.begin() + i);
 
-                if(worker.ports.empty()){
-                        //poison compress
-                        compress_frame(worker.compress.get(), nullptr);
-                        worker_is_empty = true;
-                }
+                // Keep the worker (and its compress_state + thread) alive even
+                // when it becomes empty. Do NOT poison the compress and do NOT
+                // erase the worker from s->workers here. Erasing/recreating a
+                // worker against the single shared parent module corrupts the
+                // parent's child-list / refcount accounting and trips the
+                // `assert(found)` in module_del_ref on add/remove/add/remove.
+                // Leaving the thread to block in compress_pop() keeps one
+                // compress module per compression-string for the parent's whole
+                // lifetime, which is the invariant module.c expects. A later
+                // move_port_to_worker() reuses this idle worker instead of
+                // re-registering a fresh compress module.
         }
-
-        // Hand the worker thread back to the caller once the worker is empty,
-        // so that the caller can join it (and erase the emptied worker from
-        // s->workers) strictly outside ports_mut. Joining here would deadlock:
-        // the worker needs ports_mut to observe the poison and exit, and if we
-        // erase the worker here, rxtx_destroy -> rxtx::join() would run while
-        // ports_mut is still held.
-        if(worker_is_empty)
-                *out_thread = std::move(worker.thread);
 
         for(auto& p : s->index_to_port){
                 if(p.first == compress_cfg && p.second > i)
@@ -279,25 +274,10 @@ static void extract_port(struct state_recompress *s,
 }
 
 void recompress_remove_port(struct state_recompress *s, int index){
-        std::thread thread_to_join;
-        std::string compress_cfg;
-        {
-                std::lock_guard<std::mutex> lock(s->mut);
-                auto [cfg, i] = s->index_to_port[index];
-                compress_cfg = std::move(cfg);
-                extract_port(s, compress_cfg, i, nullptr, &thread_to_join);
-                s->index_to_port.erase(s->index_to_port.begin() + index);
-        }
-
-        // Join the emptied worker's thread and remove it from the map strictly
-        // outside s->mut. The worker is empty here, so the erase destroys no
-        // ports and triggers no rxtx teardown; it just prevents a later
-        // move_port_to_worker() from resurrecting this joined worker.
-        if(thread_to_join.joinable()){
-                thread_to_join.join();
-                std::lock_guard<std::mutex> lock(s->mut);
-                s->workers.erase(compress_cfg);
-        }
+        std::lock_guard<std::mutex> lock(s->mut);
+        auto [cfg, i] = s->index_to_port[index];
+        extract_port(s, cfg, i);
+        s->index_to_port.erase(s->index_to_port.begin() + index);
 }
 
 uint32_t recompress_get_port_ssrc(struct state_recompress *s, int idx){
@@ -321,39 +301,24 @@ void recompress_port_set_active(struct state_recompress *s,
 bool recompress_port_change_compress(struct state_recompress *s, int index,
                 const char *new_compress)
 {
-        std::thread thread_to_join;
-        std::string old_compress;
-        bool success = false;
-        {
-                std::lock_guard<std::mutex> lock(s->mut);
-                auto [cfg, i] = s->index_to_port[index];
-                old_compress = std::move(cfg);
+        std::lock_guard<std::mutex> lock(s->mut);
+        auto [old_compress, i] = s->index_to_port[index];
 
-                if(old_compress == new_compress)
-                        return true;
+        if(old_compress == new_compress)
+                return true;
 
-                recompress_output_port port;
-                extract_port(s, old_compress, i, &port, &thread_to_join);
-                int index_in_worker = move_port_to_worker(s, new_compress, std::move(port));
+        recompress_output_port port;
+        extract_port(s, old_compress, i, &port);
+        int index_in_worker = move_port_to_worker(s, new_compress, std::move(port));
 
-                if(index_in_worker < 0){
-                        s->index_to_port.erase(s->index_to_port.begin() + index);
-                } else {
-                        s->index_to_port[index] = {new_compress, index_in_worker};
-                        success = true;
-                }
+        if(index_in_worker < 0){
+                s->index_to_port.erase(s->index_to_port.begin() + index);
+                return false;
         }
 
-        // Join the emptied old worker's thread and remove it from the map
-        // strictly outside s->mut, so a later move_port_to_worker(old_compress)
-        // re-creates a fresh worker instead of resurrecting this joined one.
-        if(thread_to_join.joinable()){
-                thread_to_join.join();
-                std::lock_guard<std::mutex> lock(s->mut);
-                s->workers.erase(old_compress);
-        }
+        s->index_to_port[index] = {new_compress, index_in_worker};
 
-        return success;
+        return true;
 }
 
 static int worker_get_num_active_ports(const recompress_worker_ctx& worker){
