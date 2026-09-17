@@ -248,23 +248,12 @@ static void extract_port(struct state_recompress *s,
                 recompress_output_port *move_to = nullptr)
 {
         auto& worker = s->workers[compress_cfg];
-        bool worker_empty = false;
         {
                 std::unique_lock<std::mutex> lock(worker.ports_mut);
                 if(move_to)
                         *move_to = std::move(worker.ports[i]);
                 worker.ports.erase(worker.ports.begin() + i);
 
-                if(worker.ports.empty()){
-                        //poison compress
-                        compress_frame(worker.compress.get(), nullptr);
-                        worker_empty = true;
-                }
-        }
-
-        if(worker_empty){
-                worker.thread.join();
-                s->workers.erase(compress_cfg);
         }
 
         for(auto& p : s->index_to_port){

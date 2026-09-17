@@ -465,7 +465,9 @@ static struct response *create_port_helper(struct hd_rum_translator_state *s,
         RTP_RATE_UNLIMITED, s->server_socket != nullptr);
 
     if(idx < 0) {
-        free_message((struct message *) msg, new_response(RESPONSE_INT_SERV_ERR, "Cannot create output port."));
+        // Do not use idx (== -1) below and do not free msg here: the caller
+        // (process_root_messages) frees msg together with the returned response.
+        return new_response(RESPONSE_INT_SERV_ERR, "Cannot create output port.\n");
     }
 
     if (compress) {
