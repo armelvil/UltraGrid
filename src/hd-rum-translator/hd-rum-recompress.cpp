@@ -52,7 +52,6 @@
 
 #include "debug.h"
 #include "host.h"
-#include "module.h"
 #include "rtp/rtp.h"
 #include "utils/macros.h" // for snprintf_ch
 #include "utils/misc.h"
@@ -96,56 +95,6 @@ struct recompress_output_port {
 };
 
 struct recompress_worker_ctx {
-        recompress_worker_ctx() = default;
-        recompress_worker_ctx(const recompress_worker_ctx &) = delete;
-        recompress_worker_ctx &operator=(const recompress_worker_ctx &) = delete;
-        recompress_worker_ctx(recompress_worker_ctx &&) = delete;
-        recompress_worker_ctx &operator=(recompress_worker_ctx &&) = delete;
-        // C++ destroys members in REVERSE declaration order, and `parent` is
-        // declared after `compress`, so we cannot rely on member destruction to
-        // tear down the compress_state before the private parent module. Do it
-        // explicitly here, in the destructor body, so the COMPRESS module (and
-        // its data children) are guaranteed to unregister from the private
-        // parent before we tear that parent down. Otherwise `module_done()` on
-        // the parent fires the "Child database not empty" path and the
-        // `module_del_ref()` assert trips.
-        ~recompress_worker_ctx()
-        {
-                // Join the worker thread first: it consumes from the compress
-                // state, so it must be stopped before the state is destroyed.
-                if (thread.joinable()) {
-                        thread.join();
-                }
-                // Destroy the compress_state (unregisters the COMPRESS module
-                // and its data children from the private parent).
-                compress.reset();
-                // Now the private parent has no children; tear it down safely.
-                teardown_parent();
-        }
-
-        // Initialize the worker's private parent module against the translator
-        // root. Called before creating the compress_state; idempotent.
-        void init_parent(struct module *root)
-        {
-                if (parent_ready) {
-                        return;
-                }
-                module_init_default(&parent);
-                parent.cls = MODULE_CLASS_TX;
-                module_register(&parent, root);
-                parent_ready = true;
-        }
-        // Tear down the private parent module. Called when the worker (and its
-        // compress_state) is destroyed.
-        void teardown_parent()
-        {
-                if (parent_ready) {
-                        module_done(&parent);
-                        parent_ready = false;
-                }
-        }
-        struct module *get_parent() { return &parent; }
-
         std::string compress_cfg;
         std::unique_ptr<compress_state, compress_state_deleter> compress;
 
@@ -153,19 +102,6 @@ struct recompress_worker_ctx {
         std::vector<recompress_output_port> ports;
 
         std::thread thread;
-
-private:
-        // Every worker owns its own parent module registered against the
-        // translator root. Erasing a worker therefore only ever manipulates
-        // ITS OWN parent's child-list/refcounts, never the shared root's. This
-        // makes erase+recreate of a worker safe (the compress_state is torn
-        // down and re-created fresh against this private parent, which is
-        // exactly the known-good wavelet-feature behavior), and avoids both
-        // the `module_del_ref` assert and the 3rd-add heap corruption caused
-        // by reusing a compress_state across poison/respawn against a shared
-        // parent.
-        struct module parent{};
-        bool parent_ready = false;
 };
 
 struct state_recompress {
@@ -265,13 +201,12 @@ static int move_port_to_worker(struct state_recompress *s, const char *compress,
         auto& worker = s->workers[compress];
         if(!worker.compress){
                 worker.compress_cfg = compress;
-                worker.init_parent(s->parent);
-                int ret = compress_init(worker.get_parent(), compress, out_ptr(worker.compress));
+                int ret = compress_init(s->parent, compress, out_ptr(worker.compress));
                 if (ret != 0) {
-                        worker.teardown_parent();
                         s->workers.erase(compress);
                         return -1;
                 }
+
                 worker.thread = std::thread(recompress_worker, &worker);
         }
 
@@ -313,104 +248,50 @@ static void extract_port(struct state_recompress *s,
                 recompress_output_port *move_to = nullptr)
 {
         auto& worker = s->workers[compress_cfg];
-        bool worker_empty = false;
         {
-                std::lock_guard<std::mutex> lock(worker.ports_mut);
+                std::unique_lock<std::mutex> lock(worker.ports_mut);
                 if(move_to)
                         *move_to = std::move(worker.ports[i]);
                 worker.ports.erase(worker.ports.begin() + i);
 
                 if(worker.ports.empty()){
-                        // Poison the compress so the worker thread can observe
-                        // the poison and exit.
+                        //poison compress
                         compress_frame(worker.compress.get(), nullptr);
-                        worker_empty = true;
+                        worker.thread.join();
+                        s->workers.erase(compress_cfg);
                 }
-        }
-
-        // Join the worker thread outside ports_mut, so the worker can acquire
-        // ports_mut, observe the poison, and exit.
-        if(worker_empty){
-                worker.thread.join();
         }
 
         for(auto& p : s->index_to_port){
                 if(p.first == compress_cfg && p.second > i)
                         p.second--;
         }
-
-        // Once the last port of a compression leaves, tear the worker down
-        // entirely (thread, compress_state, and its OWN private parent module).
-        // Because each worker has its own parent, this erase only touches that
-        // private parent's child-list/refcounts - never the shared root module
-        // - so a later re-add that re-creates a fresh worker+compress_state is
-        // safe. This is the known-good wavelet-feature behavior and works for
-        // both sync and async compressors (the compress_state is always created
-        // fresh, so its internal async consumer thread is also started fresh).
-        if(worker_empty){
-                s->workers.erase(compress_cfg);
-        }
 }
 
 void recompress_remove_port(struct state_recompress *s, int index){
         std::lock_guard<std::mutex> lock(s->mut);
-        auto [cfg, i] = s->index_to_port[index];
-        extract_port(s, cfg, i);
-        s->index_to_port.erase(s->index_to_port.begin() + index);
-}
+        auto [compress_cfg, i] = s->index_to_port[index];
 
-// Resolve a global port index to the owning worker and the port within it.
-// Returns nullptr if the index is out of range, the worker is absent, or the
-// port index is invalid. Caller must hold s->mut; structural changes to
-// workers/ports only happen under s->mut, so the returned pointers stay valid
-// for the caller's critical section (the caller still locks ports_mut before
-// touching the port itself).
-static recompress_output_port *get_port_at(struct state_recompress *s, int index,
-                recompress_worker_ctx **out_worker = nullptr)
-{
-        if (index < 0 || index >= (int) s->index_to_port.size()) {
-                return nullptr;
-        }
-        auto &[compress_cfg, i] = s->index_to_port[index];
-        auto it = s->workers.find(compress_cfg);
-        if (it == s->workers.end()) {
-                return nullptr;
-        }
-        if (i < 0 || i >= (int) it->second.ports.size()) {
-                return nullptr;
-        }
-        if (out_worker) {
-                *out_worker = &it->second;
-        }
-        return &it->second.ports[i];
+        extract_port(s, compress_cfg, i);
+        s->index_to_port.erase(s->index_to_port.begin() + index);
 }
 
 uint32_t recompress_get_port_ssrc(struct state_recompress *s, int idx){
         std::lock_guard<std::mutex> lock(s->mut);
+        auto [compress_cfg, i] = s->index_to_port[idx];
 
-        recompress_worker_ctx *worker = nullptr;
-        recompress_output_port *port = get_port_at(s, idx, &worker);
-        if (!port) {
-                return 0;
-        }
-
-        std::lock_guard<std::mutex> work_lock(worker->ports_mut);
-        return port->ssrc;
+        std::lock_guard<std::mutex> work_lock(s->workers[compress_cfg].ports_mut);
+        return s->workers[compress_cfg].ports[i].ssrc;
 }
 
 void recompress_port_set_active(struct state_recompress *s,
                 int index, bool active)
 {
         std::lock_guard<std::mutex> lock(s->mut);
+        auto [compress_cfg, i] = s->index_to_port[index];
 
-        recompress_worker_ctx *worker = nullptr;
-        recompress_output_port *port = get_port_at(s, index, &worker);
-        if (!port) {
-                return;
-        }
-
-        std::unique_lock<std::mutex> worker_lock(worker->ports_mut);
-        port->active = active;
+        std::unique_lock<std::mutex> worker_lock(s->workers[compress_cfg].ports_mut);
+        s->workers[compress_cfg].ports[i].active = active;
 }
 
 bool recompress_port_change_compress(struct state_recompress *s, int index,
@@ -473,22 +354,15 @@ void recompress_process_async(state_recompress *s, const std::shared_ptr<video_f
 }
 
 void recompress_done(struct state_recompress *s) {
-        std::vector<std::thread> threads_to_join;
         {
                 std::lock_guard<std::mutex> lock(s->mut);
                 for(auto& worker : s->workers){
                         //poison compress
                         compress_frame(worker.second.compress.get(), nullptr);
 
-                        threads_to_join.push_back(std::move(worker.second.thread));
+                        worker.second.thread.join();
+                        // compress_done(worker.second.compress.get());
                 }
-        }
-
-        // Join every worker thread strictly outside s->mut, so each worker can
-        // acquire ports_mut, observe the poison, and exit.
-        for(auto& thread : threads_to_join){
-                if(thread.joinable())
-                        thread.join();
         }
         delete s;
 }
