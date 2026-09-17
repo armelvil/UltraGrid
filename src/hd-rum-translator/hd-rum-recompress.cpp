@@ -335,7 +335,7 @@ static void extract_port(struct state_recompress *s,
         }
 
         for(auto& p : s->index_to_port){
-         no       if(p.first == compress_cfg && p.second > i)
+                if(p.first == compress_cfg && p.second > i)
                         p.second--;
         }
 
