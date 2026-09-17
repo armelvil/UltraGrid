@@ -101,10 +101,27 @@ struct recompress_worker_ctx {
         recompress_worker_ctx &operator=(const recompress_worker_ctx &) = delete;
         recompress_worker_ctx(recompress_worker_ctx &&) = delete;
         recompress_worker_ctx &operator=(recompress_worker_ctx &&) = delete;
-        // Members (compress_state, thread, ports) are destroyed in declaration
-        // order before this body runs, so by the time we tear down the private
-        // parent module the compress_state has already unregistered from it.
-        ~recompress_worker_ctx() { teardown_parent(); }
+        // C++ destroys members in REVERSE declaration order, and `parent` is
+        // declared after `compress`, so we cannot rely on member destruction to
+        // tear down the compress_state before the private parent module. Do it
+        // explicitly here, in the destructor body, so the COMPRESS module (and
+        // its data children) are guaranteed to unregister from the private
+        // parent before we tear that parent down. Otherwise `module_done()` on
+        // the parent fires the "Child database not empty" path and the
+        // `module_del_ref()` assert trips.
+        ~recompress_worker_ctx()
+        {
+                // Join the worker thread first: it consumes from the compress
+                // state, so it must be stopped before the state is destroyed.
+                if (thread.joinable()) {
+                        thread.join();
+                }
+                // Destroy the compress_state (unregisters the COMPRESS module
+                // and its data children from the private parent).
+                compress.reset();
+                // Now the private parent has no children; tear it down safely.
+                teardown_parent();
+        }
 
         // Initialize the worker's private parent module against the translator
         // root. Called before creating the compress_state; idempotent.
@@ -318,7 +335,7 @@ static void extract_port(struct state_recompress *s,
         }
 
         for(auto& p : s->index_to_port){
-                if(p.first == compress_cfg && p.second > i)
+         no       if(p.first == compress_cfg && p.second > i)
                         p.second--;
         }
 
