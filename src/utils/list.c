@@ -197,12 +197,22 @@ simple_linked_list_it_peek_next(list_it const *it)
 bool
 simple_linked_list_remove(struct simple_linked_list *l, void *item)
 {
-        list_item  *it        = l->first;
-        list_item **prev_next = &l->first;
+        list_item *it   = l->first;
+        list_item *prev = nullptr;
 
         while (it != nullptr) {
                 if (it->data == item) {
-                        (*prev_next) = it->next;
+                        if (prev != nullptr) {
+                                prev->next = it->next;
+                        } else {
+                                l->first = it->next;
+                        }
+                        // keep l->last valid when removing the tail node,
+                        // otherwise it would dangle at the freed node and a
+                        // subsequent append would write into freed memory
+                        if (it == l->last) {
+                                l->last = prev;
+                        }
                         free(it);
 
                         l->count -= 1;
@@ -212,8 +222,8 @@ simple_linked_list_remove(struct simple_linked_list *l, void *item)
 
                         return true;
                 }
-                prev_next = &it->next;
-                it        = it->next;
+                prev = it;
+                it   = it->next;
         }
 
         return false;
@@ -226,14 +236,22 @@ simple_linked_list_remove_index(struct simple_linked_list *l, int index)
                 return nullptr;
         }
 
-        list_item  *it        = l->first;
-        list_item **prev_next = &l->first;
-        int         i         = 0;
+        list_item *it   = l->first;
+        list_item *prev = nullptr;
+        int        i    = 0;
 
         while (it != nullptr) {
                 if (i == index) {
-                        (*prev_next) = it->next;
-                        void *ret    = it->data;
+                        if (prev != nullptr) {
+                                prev->next = it->next;
+                        } else {
+                                l->first = it->next;
+                        }
+                        // keep l->last valid when removing the tail node
+                        if (it == l->last) {
+                                l->last = prev;
+                        }
+                        void *ret = it->data;
                         free(it);
 
                         l->count -= 1;
@@ -243,8 +261,8 @@ simple_linked_list_remove_index(struct simple_linked_list *l, int index)
 
                         return ret;
                 }
-                prev_next = &it->next;
-                it        = it->next;
+                prev = it;
+                it   = it->next;
                 i++;
         }
         abort(); // handled by the cond at the beginning
