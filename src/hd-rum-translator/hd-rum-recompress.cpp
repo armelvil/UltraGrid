@@ -254,12 +254,6 @@ static void extract_port(struct state_recompress *s,
                         *move_to = std::move(worker.ports[i]);
                 worker.ports.erase(worker.ports.begin() + i);
 
-                if(worker.ports.empty()){
-                        //poison compress
-                        compress_frame(worker.compress.get(), nullptr);
-                        worker.thread.join();
-                        s->workers.erase(compress_cfg);
-                }
         }
 
         for(auto& p : s->index_to_port){
