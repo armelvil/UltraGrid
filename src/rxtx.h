@@ -52,7 +52,7 @@
 #include "utils/macros.h" // for STR_LEN
 
 enum {
-        RXTX_ABI_VERSION = 6,
+        RXTX_ABI_VERSION = 7,
 };
 
 struct audio_desc;
@@ -178,6 +178,7 @@ typedef void *rxtx_send_shr_ptr_video_frame_fn;
 typedef void  rxtx_send_video_frame_fn(void *state, struct video_frame *f);
 typedef void *rxtx_vrecv_routine_fn(void *state);
 typedef void  rxtx_join_video_sender_fn(void *state);
+typedef void  rxtx_join_video_receiver_fn(void *state);
 
 struct rxtx_info {
         const char     *long_name;
@@ -193,6 +194,7 @@ struct rxtx_info {
         rxtx_send_video_frame_fn         *send_video_frame_c;
         rxtx_vrecv_routine_fn            *video_recv_routine;
         rxtx_join_video_sender_fn        *join_video_sender;
+        rxtx_join_video_receiver_fn      *join_video_receiver;
 };
 
 #ifdef __cplusplus

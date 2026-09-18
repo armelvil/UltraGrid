@@ -189,12 +189,21 @@ init(struct rxtx_params *params)
 }
 
 
-static void join(void *state) {
+static void join(void *state)
+{
         struct ultragrid_rtp_rxtx *s = state;
         if(s->async_sending_task){
                 wait_task(s->async_sending_task);
                 s->async_sending_task = nullptr;
         }
+}
+
+static void join_video_receiver(void *state)
+{
+        struct ultragrid_rtp_rxtx *s = state;
+        // per-instance stop; the receiver loop and its epilogue run the same
+        // teardown as a global shutdown (unregister, drain, poison pill)
+        s->should_exit = true;
 }
 
 static void *send_video_frame_async_callback(void *arg);
@@ -601,10 +610,11 @@ static const struct rxtx_info ultragrid_rtp_rxtx_info = {
         .send_audio_frame = send_audio_frame,
         .recv_audio_frame = recv_audio_frame,
 
-        .send_video_frame   = nullptr,
-        .send_video_frame_c = send_video_frame,
-        .video_recv_routine = receiver_thread,
-        .join_video_sender  = join,
+        .send_video_frame     = nullptr,
+        .send_video_frame_c   = send_video_frame,
+        .video_recv_routine   = receiver_thread,
+        .join_video_sender    = join,
+        .join_video_receiver  = join_video_receiver,
 };
 
 REGISTER_MODULE(ultragrid_rtp, &ultragrid_rtp_rxtx_info, LIBRARY_CLASS_RXTX,

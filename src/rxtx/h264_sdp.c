@@ -325,7 +325,7 @@ h264_sdp_ctl_property(void *state, enum rxtx_property p,
         case SET_ULTRAGRID_RTP_MUTLI_OUT:
                 abort();
         }
-        MSG(WARNING, "Unexpected property %d queiried!\n", (int) p);
+        MSG(WARNING, "Unexpected property %d queried!\n", (int) p);
         return false;
 }
 
