@@ -99,6 +99,15 @@ struct display;
 #define MAGIC    to_fourcc('R', 'T', 'u', 'r')
 #define MOD_NAME "[rxtx/ultragrid_rtp] "
 
+/*
+ * Based on "--param low-latency-video" contributed by Alan Latteri
+ * (alatteri, https://github.com/instinctual/UltraGrid).
+ */
+ADD_TO_PARAM("low-latency-video",
+             "* low-latency-video\n"
+             "  Disable the default one-frame RTP video playout delay. Intended "
+             "for reliable, low-jitter links with downstream scheduled output.\n");
+
 struct async_data {
         struct ultragrid_rtp_rxtx *s;
         struct video_frame *f;
@@ -255,9 +264,16 @@ receiver_process_messages(struct ultragrid_rtp_rxtx *s)
         while ((msg = (struct msg_receiver *) check_message(s->receiver_mod))) {
                 switch (msg->type) {
                 case RECEIVER_MSG_VIDEO_PROP_CHANGED:
+                        /* low-latency-video (Alan Latteri, instinctual/UltraGrid):
+                         * let the operator drop the default one-frame playout
+                         * delay on reliable, low-jitter links. */
+                        const double playout_delay =
+                            get_commandline_param("low-latency-video") != NULL
+                                ? 0.0
+                                : 1.0 / msg->new_desc.fps;
                         rtp_rxtx_set_pbuf_delay(
                             &s->rtp_common->medium[TX_MEDIA_VIDEO],
-                            1.0 / msg->new_desc.fps);
+                            playout_delay);
                         free_message((struct message *) msg,
                                      new_response(RESPONSE_OK, nullptr));
                         break;
