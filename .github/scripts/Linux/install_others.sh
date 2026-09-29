@@ -6,15 +6,15 @@ if [ "$(id -u)" -eq 0 ]; then
         alias sudo=
 fi
 
-install_ximea() (
-        filename=XIMEA.tgz
-        if [ ! -f "$filename" ]; then
-                curl -L "${XIMEA_DOWNLOAD_URL:?}" -o $filename
-        fi
-        tar xzf $filename
-        cd package
-        sudo ./install -noudev
-)
+# install_ximea() (
+#         filename=XIMEA.tgz
+#         if [ ! -f "$filename" ]; then
+#                 curl -L "${XIMEA_DOWNLOAD_URL:?}" -o $filename
+#         fi
+#         tar xzf $filename
+#         cd package
+#         sudo ./install -noudev
+# )
 
 install_gpujpeg() (
         curl -LO https://github.com/CESNET/GPUJPEG/releases/download/\
@@ -70,7 +70,8 @@ if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ] || [ "$1" = help ]; }; t
 fi
 
 if [ $# -eq 0 ] || [ $show_help ]; then
-        set -- gpujpeg ndi svt_jpegxs vulkan ximea
+        # set -- gpujpeg ndi svt_jpegxs vulkan ximea
+        set -- gpujpeg ndi svt_jpegxs vulkan
 fi
 
 if [ $show_help ]; then

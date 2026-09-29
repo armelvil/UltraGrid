@@ -38,7 +38,8 @@ apt -y install \
   libvulkan-dev\
 
 /.github/scripts/install-common-deps.sh
-/.github/scripts/Linux/install_others.sh ndi ximea
+#/.github/scripts/Linux/install_others.sh ndi ximea
+/.github/scripts/Linux/install_others.sh ndi
 
 # mkappimage
 mkai_arch=$(dpkg --print-architecture)

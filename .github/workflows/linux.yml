@@ -29,8 +29,8 @@ jobs:
         $GITHUB_WORKSPACE/.github/scripts/get-etag.sh ndi\
          https://downloads.ndi.tv/SDK/NDI_SDK_Linux/\
         Install_NDI_SDK_v6_Linux.tar.gz >> $GITHUB_OUTPUT
-        $GITHUB_WORKSPACE/.github/scripts/get-etag.sh ximea\
-         "$XIMEA_DOWNLOAD_URL" >> $GITHUB_OUTPUT
+#        $GITHUB_WORKSPACE/.github/scripts/get-etag.sh ximea\
+#         "$XIMEA_DOWNLOAD_URL" >> $GITHUB_OUTPUT
     - name: Run actions/cache for NDI
       id: cache-ndi
       uses: actions/cache@main
@@ -59,12 +59,12 @@ jobs:
          hashFiles(
          '.github/scripts/Linux/install_glfw.sh',
          '.github/scripts/Linux/glfw-patches/*') }}
-    - name: Cache XIMEA
-      id: cache-macos-ximea
-      uses: actions/cache@main
-      with:
-        path: '/var/tmp/XIMEA.tgz'
-        key: cache-ximea-${{ runner.os }}-${{ steps.etags.outputs.ximea }}
+#    - name: Cache XIMEA
+#      id: cache-macos-ximea
+#      uses: actions/cache@main
+#      with:
+#        path: '/var/tmp/XIMEA.tgz'
+#        key: cache-ximea-${{ runner.os }}-${{ steps.etags.outputs.ximea }}
     - name: bootstrap
       run: .github/scripts/Linux/prepare.sh
     - name: configure
