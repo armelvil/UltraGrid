@@ -257,9 +257,80 @@ static const struct decoder_info decoders[] = {
         { AV_CODEC_ID_AV1,  { "libdav1d" }              },
 };
 
+static bool is_hw_decoder_name(const char *name);
+static bool has_suffix(const char *name, const char *const *suffixes,
+                       size_t n);
+
+/**
+ * Vendor priority rank for a hardware decoder name. Higher rank is tried
+ * earlier (lower numeric value = higher precedence). Order (desired):
+ *   QSV -> AMD -> Nvidia -> Vulkan -> other HW -> software
+ * "other HW" covers *_vaapi, *_v4l2m2m, *_mediacodec, *_videotoolbox,
+ * *_d3d11va, *_dxva2, *_vdpau (i.e. everything with a HW suffix that is not
+ * explicitly ranked above). The exact ranking is decided here in one place.
+ */
+static int
+hw_decoder_rank(const char *name)
+{
+        static const char *const qsv_suffix[] = { "_qsv" };
+        static const char *const amd_suffix[] = { "_amf" };
+        static const char *const nv_suffix[]  = { "_cuvid", "_nvdec" };
+        static const char *const vk_suffix[]  = { "_vulkan" };
+
+        /* NOTE: no pixfmt whitelist is applied here. get_format_callback()
+         * already negotiates the HW format and falls back to software when no
+         * HW init succeeds; adding a guard here would silently drop working
+         * decoders (e.g. av1_qsv, whose output surface reports as VAAPI/QSV)
+         * before they ever get a chance to open. So we admit every HW-suffix
+         * decoder and let avcodec_open2()/get_format_callback() decide. */
+        if (has_suffix(name, qsv_suffix, countof(qsv_suffix)))
+                return 1;
+        if (has_suffix(name, amd_suffix, countof(amd_suffix)))
+                return 2;
+        if (has_suffix(name, nv_suffix, countof(nv_suffix)))
+                return 3;
+        if (has_suffix(name, vk_suffix, countof(vk_suffix)))
+                return 4;
+        if (is_hw_decoder_name(name))
+                return 5;
+        return INT_MAX; // software / non-HW
+}
+
+/**
+ * true if name is a hardware-accelerated decoder UltraGrid can select.
+ * Recognizes the usual ffmpeg HW decoder suffixes.
+ */
+static bool
+is_hw_decoder_name(const char *name)
+{
+        static const char *const hw_suffixes[] = {
+                "_vaapi", "_qsv", "_vulkan", "_nvdec", "_cuvid", "_amf",
+                "_mediacodec", "_v4l2m2m", "_videotoolbox", "_d3d11va",
+                "_dxva2", "_vdpau",
+        };
+        return has_suffix(name, hw_suffixes, countof(hw_suffixes));
+}
+
+/**
+ * true if name ends with any of the given suffixes.
+ */
+static bool
+has_suffix(const char *name, const char *const *suffixes, size_t n)
+{
+        const size_t name_len = strlen(name);
+        for (size_t i = 0; i < n; ++i) {
+                const size_t suffix_len = strlen(suffixes[i]);
+                if (name_len > suffix_len &&
+                    strcmp(name + name_len - suffix_len, suffixes[i]) == 0) {
+                        return true;
+                }
+        }
+        return false;
+}
+
 /**
  * fills usable_decoders with decoders available for avcodec_id; if
- * preferrred_decoders in decoders is set, these will be listed first
+ * preferred_decoders in decoders is set, these will be listed first
  */
 static bool
 get_decoders(
@@ -306,6 +377,66 @@ get_decoders(
                         usable_decoders[codec_index++] = codec;
                 }
         }
+        // then, if prefer-hw-accel is requested (and no forced decoder was
+        // given above), auto-prepend hardware decoders for the codec so a HW
+        // decoder is tried before the (software) preferred/default ones.
+        //
+        // HW candidates are ordered by vendor rank (QSV -> AMD -> Nvidia ->
+        // Vulkan -> other HW), NOT by ffmpeg's av_codec_iterate() registration
+        // order, so the intended priority is deterministic. No pixfmt whitelist
+        // is applied: get_format_callback() negotiates the HW format and falls
+        // back to software, so every HW-suffix decoder gets a fair shot.
+        if (param == NULL && get_commandline_param("prefer-hw-accel") != NULL) {
+                // collect matching HW decoders with their rank
+                struct hw_candidate {
+                        const AVCodec *codec;
+                        int            rank;
+                } hw_cands[MAX_DECODERS];
+                unsigned int n_hw = 0;
+
+                const AVCodec *codec = NULL;
+                void *opaque         = NULL;
+                while ((codec = av_codec_iterate(&opaque)) != NULL) {
+                        if (codec->id != avcodec_id ||
+                            !av_codec_is_decoder(codec) ||
+                            !is_hw_decoder_name(codec->name)) {
+                                continue;
+                        }
+                        // avoid duplicates (e.g. a forced/preferred entry
+                        // coincidentally matching a HW decoder name)
+                        bool seen = false;
+                        for (unsigned int i = 0; i < codec_index; ++i) {
+                                if (usable_decoders[i] == codec) {
+                                        seen = true;
+                                        break;
+                                }
+                        }
+                        if (seen) {
+                                continue;
+                        }
+                        if (n_hw < MAX_DECODERS) {
+                                hw_cands[n_hw].codec = codec;
+                                hw_cands[n_hw].rank  = hw_decoder_rank(codec->name);
+                                n_hw++;
+                        }
+                }
+
+                // stable insertion sort by rank (ascending = highest priority)
+                for (unsigned int i = 1; i < n_hw; ++i) {
+                        const struct hw_candidate key = hw_cands[i];
+                        unsigned int             j   = i;
+                        while (j > 0 && hw_cands[j - 1].rank > key.rank) {
+                                hw_cands[j] = hw_cands[j - 1];
+                                j--;
+                        }
+                        hw_cands[j] = key;
+                }
+
+                for (unsigned int i = 0;
+                     i < n_hw && codec_index < MAX_DECODERS; ++i) {
+                        usable_decoders[codec_index++] = hw_cands[i].codec;
+                }
+        }
         // then try preferred codecs
         const char *const *preferred_decoders_it = preferred_decoders;
         while (*preferred_decoders_it) {
@@ -347,6 +478,12 @@ ADD_TO_PARAM("use-hw-accel", "* use-hw-accel[=<api>|help]\n"
         "  Try to use hardware accelerated decoding with lavd "
         "(NVDEC/VAAPI/VDPAU/VideoToolbox).\n"
         "  Optionally with enforced API option.\n");
+
+ADD_TO_PARAM("prefer-hw-accel", "* prefer-hw-accel\n"
+        "  Prefer hardware accelerated decoders for the incoming codec "
+        "(e.g. av1_qsv, h264_vaapi, hevc_nvdec) over software ones.\n"
+        "  Only takes effect together with use-hw-accel; if "
+        "force-lavd-decoder is given it takes precedence.\n");
 static bool configure_with(struct state_libavcodec_decompress *s,
                 struct video_desc desc, void *extradata, int extradata_size)
 {
@@ -658,7 +795,16 @@ static enum AVPixelFormat get_format_callback(struct AVCodecContext *s, const en
                         log_msg(LOG_LEVEL_ERROR, MOD_NAME "Requested hw accel \"%s\" is not available\n", hwaccel);
                         return AV_PIX_FMT_NONE;
                 }
-                log_msg(LOG_LEVEL_WARNING, "[lavd] Falling back to software decoding!\n");
+                // Decoder opened but no HW pixel format could be initialized,
+                // so we fall back to software decode within this same decoder.
+                // This is an important signal: prefer-hw-accel/use-hw-accel were
+                // requested but HW acceleration will NOT be used for this stream.
+                log_msg(LOG_LEVEL_WARNING,
+                        MOD_NAME
+                        "Falling back to software decoding for decoder %s: no "
+                        "hardware pixel format could be initialized for the "
+                        "stream.\n",
+                        s->codec->name);
                 if (state->out_codec == HW_VDPAU) {
                         return AV_PIX_FMT_NONE;
                 }
