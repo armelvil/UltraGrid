@@ -100,13 +100,63 @@ struct display;
 #define MOD_NAME "[rxtx/ultragrid_rtp] "
 
 /*
- * Based on "--param low-latency-video" contributed by Alan Latteri
- * (alatteri, https://github.com/instinctual/UltraGrid).
+ * Overridable RTP video playout delay. Upstream unconditionally buffers one
+ * frame; this lets the operator tune it. The generic form is based on the
+ * "--param low-latency-video" contributed by Alan Latteri
+ * (alatteri, https://github.com/instinctual/UltraGrid), generalized to accept
+ * an explicit delay value.
  */
+ADD_TO_PARAM("video-playout-delay",
+             "* video-playout-delay=<value>\n"
+             "  Override the default one-frame RTP video playout delay. Value is\n"
+             "  a time: microseconds (plain integer), <n>ms, <n>s, or a fraction\n"
+             "  of a second in frame/s notation (e.g. 1/30 = one frame at 30\n"
+             "  fps). Intended for reliable, low-jitter links with downstream\n"
+             "  scheduled output.\n");
 ADD_TO_PARAM("low-latency-video",
              "* low-latency-video\n"
-             "  Disable the default one-frame RTP video playout delay. Intended "
-             "for reliable, low-jitter links with downstream scheduled output.\n");
+             "  Backward-compatible alias for video-playout-delay=0. Disable the\n"
+             "  default one-frame RTP video playout delay. Intended for reliable,\n"
+             "  low-jitter links with downstream scheduled output.\n");
+
+/**
+ * Parse a video playout delay specification into seconds.
+ *
+ * Accepts:
+ *   <int>      microseconds (e.g. 16666)
+ *   <n>ms      milliseconds (e.g. 16ms)
+ *   <n>s       seconds      (e.g. 1s)
+ *   <a>/<b>    fraction of a second in frame/s notation (e.g. 1/30)
+ *
+ * @returns delay in seconds, or <0.0 on parse error.
+ */
+static double
+parse_playout_delay(const char *spec)
+{
+        char   *end = NULL;
+        double value = strtod(spec, &end);
+        if (value < 0.0 || end == spec) {
+                return -1.0;
+        }
+        if (*end == '/') {
+                const double denom = strtod(end + 1, &end);
+                if (denom <= 0.0 || *end != '\0') {
+                        return -1.0;
+                }
+                return value / denom;
+        }
+        if (strcmp(end, "ms") == 0) {
+                return value / 1000.0;
+        }
+        if (strcmp(end, "s") == 0) {
+                return value;
+        }
+        if (*end == '\0') {
+                /* plain integer: microseconds */
+                return value / 1000000.0;
+        }
+        return -1.0; /* unknown suffix */
+}
 
 struct async_data {
         struct ultragrid_rtp_rxtx *s;
@@ -136,6 +186,13 @@ struct ultragrid_rtp_rxtx {
 
         long long int         send_bytes_total;
         struct module        *parent;
+
+        /**
+         * Overridden RTP video playout delay in seconds, or <0.0 to fall back
+         * to the default one-frame delay (1/fps). Populated from the
+         * video-playout-delay / low-latency-video params.
+         */
+        double                 playout_delay_sec;
 
         time_ns_t start_time;
 
@@ -193,6 +250,22 @@ init(struct rxtx_params *params)
 
         if (strlen(params->video_compression) == 0) {
                 snprintf_ch(params->video_compression, "none");
+        }
+
+        const char *const delay_spec = get_commandline_param("video-playout-delay");
+        s->playout_delay_sec = -1.0; /* default: one-frame delay */
+        if (delay_spec != nullptr) {
+                s->playout_delay_sec = parse_playout_delay(delay_spec);
+                if (s->playout_delay_sec < 0.0) {
+                        log_msg(LOG_LEVEL_ERROR,
+                                MOD_NAME "Invalid video-playout-delay value "
+                                "'%s'; falling back to default one-frame "
+                                "delay.\n",
+                                delay_spec);
+                        s->playout_delay_sec = -1.0;
+                }
+        } else if (get_commandline_param("low-latency-video") != nullptr) {
+                s->playout_delay_sec = 0.0;
         }
         return s;
 }
@@ -264,16 +337,14 @@ receiver_process_messages(struct ultragrid_rtp_rxtx *s)
         while ((msg = (struct msg_receiver *) check_message(s->receiver_mod))) {
                 switch (msg->type) {
                 case RECEIVER_MSG_VIDEO_PROP_CHANGED:
-                        /* low-latency-video (Alan Latteri, instinctual/UltraGrid):
-                         * let the operator drop the default one-frame playout
-                         * delay on reliable, low-jitter links. */
-                        const double playout_delay =
-                            get_commandline_param("low-latency-video") != NULL
-                                ? 0.0
-                                : 1.0 / msg->new_desc.fps;
+                        /* Default is one frame of playout delay; an overridden
+                         * value (video-playout-delay / low-latency-video) is
+                         * stored in seconds and used verbatim. */
                         rtp_rxtx_set_pbuf_delay(
                             &s->rtp_common->medium[TX_MEDIA_VIDEO],
-                            playout_delay);
+                            s->playout_delay_sec < 0.0
+                                ? 1.0 / msg->new_desc.fps
+                                : s->playout_delay_sec);
                         free_message((struct message *) msg,
                                      new_response(RESPONSE_OK, nullptr));
                         break;
