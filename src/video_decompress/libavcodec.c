@@ -505,6 +505,7 @@ static bool configure_with(struct state_libavcodec_decompress *s,
                 struct video_desc desc, void *extradata, int extradata_size)
 {
         s->consecutive_failed_decodes = 0;
+        s->decoder_reinit_pending    = false;
 
         const enum AVCodecID avcodec_id = get_ug_to_av_codec(desc.color_spec);
         if (avcodec_id == AV_CODEC_ID_NONE) {
@@ -1168,11 +1169,13 @@ static void check_duration(struct state_libavcodec_decompress *s, double duratio
 }
 
 /*
- * QSV in-process decoder reinit is based on work by Alan Latteri
- * (alatteri, https://github.com/instinctual/UltraGrid). On a hardware
- * (QSV) device error we rebuild the decoder context at the next safe access
- * unit instead of blacklisting the accelerator, which avoids killing the
- * whole receiver or growing SRT latency.
+ * In-process decoder reinit on a hardware device error is based on work by
+ * Alan Latteri (alatteri, https://github.com/instinctual/UltraGrid), who
+ * implemented it for QSV; generalized here to any hardware decoder (VAAPI,
+ * QSV, CUVID/NVDEC, VDPAU, ...). On a hardware device error we rebuild the
+ * decoder context at the next safe access unit instead of blacklisting the
+ * accelerator, which avoids killing the whole receiver or growing SRT latency.
+ * Software decoders keep the original blacklist/fallback behavior.
  */
 static bool
 is_qsv_decoder_name(const char *name)
@@ -1181,9 +1184,10 @@ is_qsv_decoder_name(const char *name)
 }
 
 static bool
-should_reinitialize_qsv(const char *decoder_name, int ret)
+should_reinitialize_hw_decoder(struct state_libavcodec_decompress *s, int ret)
 {
-        return ret == AVERROR(EIO) && is_qsv_decoder_name(decoder_name);
+        return ret == AVERROR(EIO) &&
+               s->hwaccel.type != HWACCEL_NONE;
 }
 
 static void
@@ -1191,15 +1195,11 @@ handle_lavd_error(const char *prefix, struct state_libavcodec_decompress *s,
                   int ret)
 {
         print_decoder_error(prefix, ret);
-        const char *const decoder_name =
-            s->codec_ctx != NULL && s->codec_ctx->codec != NULL
-                ? s->codec_ctx->codec->name
-                : NULL;
-        if (should_reinitialize_qsv(decoder_name, ret)) {
+        if (should_reinitialize_hw_decoder(s, ret)) {
                 if (!s->decoder_reinit_pending) {
                         log_msg(LOG_LEVEL_ERROR,
                                 MOD_NAME
-                                "QSV device error; rebuilding the decoder "
+                                "Hardware device error; rebuilding the decoder "
                                 "context at the next random-access frame.\n");
                 }
                 s->decoder_reinit_pending = true;
@@ -1274,6 +1274,8 @@ decode_frame(struct state_libavcodec_decompress *s, unsigned char *src,
         if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
                 handle_lavd_error(MOD_NAME "recv - ", s, ret);
         }
+        // A decoder reinit was flagged during send/receive: suppress the
+        // possibly-stale frame decoded from the broken context this iteration.
         return frame_decoded && !s->decoder_reinit_pending;
 }
 
